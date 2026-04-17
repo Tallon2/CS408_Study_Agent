@@ -80,6 +80,67 @@ TOOL_DEFINITIONS = [
                 "properties": {}
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "save_study_plan",
+            "description": "保存或更新用户的学习/复习计划",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "plan_name": {
+                        "type": "string",
+                        "description": "计划名称，如：408总复习计划、数据结构第一轮"
+                    },
+                    "tasks": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "task": {"type": "string", "description": "任务内容"},
+                                "deadline": {"type": "string", "description": "截止日期，如 2026-05-01"},
+                                "priority": {"type": "string", "enum": ["high", "medium", "low"]}
+                            },
+                            "required": ["task"]
+                        },
+                        "description": "任务列表"
+                    }
+                },
+                "required": ["plan_name", "tasks"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_study_plan",
+            "description": "读取用户当前的学习计划，查看进度",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "plan_name": {
+                        "type": "string",
+                        "description": "要查看的计划名称，不填则查看所有计划"
+                    }
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "complete_task",
+            "description": "将学习计划中的某个任务标记为已完成",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "plan_name": {"type": "string", "description": "计划名称"},
+                    "task_index": {"type": "integer", "description": "任务序号（从1开始）"}
+                },
+                "required": ["plan_name", "task_index"]
+            }
+        }
     }
 ]
 
@@ -143,4 +204,136 @@ def execute_tool(name: str, arguments: str) -> str:
             "给出 2~3 个具体的学习建议，按优先级排列。"
         )
 
+    elif name == "save_study_plan":
+        return _save_study_plan(args)
+
+    elif name == "read_study_plan":
+        return _read_study_plan(args)
+
+    elif name == "complete_task":
+        return _complete_task(args)
+
     return f"[工具指令] 未知工具: {name}"
+
+
+# ============================================================
+# 学习计划管理（文件存储在 storage/plans/）
+# ============================================================
+import os
+from datetime import datetime
+
+PLANS_DIR = "storage/plans"
+
+
+def _save_study_plan(args: dict) -> str:
+    """保存学习计划到 JSON 文件"""
+    plan_name = args.get("plan_name", "默认计划")
+    tasks = args.get("tasks", [])
+
+    os.makedirs(PLANS_DIR, exist_ok=True)
+    safe_name = plan_name.replace(" ", "_").replace("/", "_")
+    plan_path = os.path.join(PLANS_DIR, f"{safe_name}.json")
+
+    # 为每个任务添加状态
+    plan_data = {
+        "plan_name": plan_name,
+        "created_at": datetime.now().isoformat(),
+        "updated_at": datetime.now().isoformat(),
+        "tasks": []
+    }
+    for i, t in enumerate(tasks):
+        plan_data["tasks"].append({
+            "index": i + 1,
+            "task": t.get("task", ""),
+            "deadline": t.get("deadline", ""),
+            "priority": t.get("priority", "medium"),
+            "completed": False,
+            "completed_at": None
+        })
+
+    with open(plan_path, "w", encoding="utf-8") as f:
+        json.dump(plan_data, f, ensure_ascii=False, indent=2)
+
+    total = len(plan_data["tasks"])
+    return (
+        f"[工具结果] ✅ 学习计划「{plan_name}」已保存，共 {total} 个任务。\n"
+        f"请向用户确认计划内容，并鼓励ta按计划执行。"
+    )
+
+
+def _read_study_plan(args: dict) -> str:
+    """读取学习计划"""
+    os.makedirs(PLANS_DIR, exist_ok=True)
+    plan_name = args.get("plan_name", "")
+
+    if plan_name:
+        # 读取指定计划
+        safe_name = plan_name.replace(" ", "_").replace("/", "_")
+        plan_path = os.path.join(PLANS_DIR, f"{safe_name}.json")
+        if not os.path.exists(plan_path):
+            return f"[工具结果] ❌ 未找到计划「{plan_name}」，可以创建一个新的。"
+        with open(plan_path, "r", encoding="utf-8") as f:
+            plan = json.load(f)
+        return _format_plan(plan)
+    else:
+        # 列出所有计划
+        files = [f for f in os.listdir(PLANS_DIR) if f.endswith(".json")]
+        if not files:
+            return "[工具结果] 📋 当前没有任何学习计划，建议为用户创建一个。"
+        all_plans = []
+        for fname in files:
+            with open(os.path.join(PLANS_DIR, fname), "r", encoding="utf-8") as f:
+                plan = json.load(f)
+            all_plans.append(_format_plan(plan))
+        return "\n\n---\n\n".join(all_plans)
+
+
+def _complete_task(args: dict) -> str:
+    """标记任务为已完成"""
+    plan_name = args.get("plan_name", "")
+    task_index = args.get("task_index", 0)
+
+    safe_name = plan_name.replace(" ", "_").replace("/", "_")
+    plan_path = os.path.join(PLANS_DIR, f"{safe_name}.json")
+    if not os.path.exists(plan_path):
+        return f"[工具结果] ❌ 未找到计划「{plan_name}」"
+
+    with open(plan_path, "r", encoding="utf-8") as f:
+        plan = json.load(f)
+
+    for t in plan["tasks"]:
+        if t["index"] == task_index:
+            t["completed"] = True
+            t["completed_at"] = datetime.now().isoformat()
+            break
+    else:
+        return f"[工具结果] ❌ 未找到第 {task_index} 个任务"
+
+    plan["updated_at"] = datetime.now().isoformat()
+    with open(plan_path, "w", encoding="utf-8") as f:
+        json.dump(plan, f, ensure_ascii=False, indent=2)
+
+    done = sum(1 for t in plan["tasks"] if t["completed"])
+    total = len(plan["tasks"])
+    return (
+        f"[工具结果] ✅ 已完成任务 #{task_index}！\n"
+        f"当前进度：{done}/{total}（{done*100//total}%）\n"
+        f"请鼓励用户继续努力！"
+    )
+
+
+def _format_plan(plan: dict) -> str:
+    """格式化计划为可读文本"""
+    tasks = plan.get("tasks", [])
+    done = sum(1 for t in tasks if t.get("completed"))
+    total = len(tasks)
+    pct = (done * 100 // total) if total > 0 else 0
+
+    lines = [f"[工具结果] 📋 计划「{plan['plan_name']}」 进度：{done}/{total}（{pct}%）"]
+    for t in tasks:
+        status = "✅" if t.get("completed") else "⬜"
+        priority_icon = {"high": "🔴", "medium": "🟡", "low": "🟢"}.get(t.get("priority", ""), "")
+        deadline = f" (截止: {t['deadline']})" if t.get("deadline") else ""
+        lines.append(f"  {status} {t['index']}. {priority_icon} {t['task']}{deadline}")
+
+    return "\n".join(lines)

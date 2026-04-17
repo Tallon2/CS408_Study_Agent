@@ -16,18 +16,21 @@ def get_agent(session_state: dict) -> LearningAgent:
 
 def chat(user_message: str, history: list, session_state: dict):
     """
-    Gradio 聊天回调函数。
-    history 格式：[{"role": "user"/"assistant", "content": "..."}]
+    Gradio 流式聊天回调（generator）。
+    每 yield 一次，前端就刷新一次，实现逐字输出效果。
     """
     if not user_message.strip():
-        return "", history, session_state
+        yield "", history, session_state
+        return
 
     agent = get_agent(session_state)
-    response = agent.chat(user_message)
-
     history.append({"role": "user",      "content": user_message})
-    history.append({"role": "assistant", "content": response})
-    return "", history, session_state
+    history.append({"role": "assistant", "content": ""})
+
+    # 逐 token 流式输出
+    for partial_reply in agent.chat_stream(user_message):
+        history[-1]["content"] = partial_reply
+        yield "", history, session_state
 
 
 def reset_session(session_state: dict):
@@ -232,7 +235,8 @@ with gr.Blocks(title="📚 个人学习助手 Agent") as demo:
 
     # ── 事件绑定 ──
     def quick_send(text, history, state):
-        return chat(text, history, state)
+        """快捷按钮也走流式"""
+        yield from chat(text, history, state)
 
     send_btn.click(fn=chat,
                    inputs=[msg_input, chatbot, session_state],
@@ -241,13 +245,13 @@ with gr.Blocks(title="📚 个人学习助手 Agent") as demo:
                      inputs=[msg_input, chatbot, session_state],
                      outputs=[msg_input, chatbot, session_state])
 
-    btn_decorator.click(fn=lambda h, s: quick_send("我想学 Python 装饰器", h, s),
+    btn_decorator.click(fn=lambda h, s: chat("我想学 Python 装饰器", h, s),
                         inputs=[chatbot, session_state],
                         outputs=[msg_input, chatbot, session_state])
-    btn_quiz.click(fn=lambda h, s: quick_send("帮我出一道 Python 练习题", h, s),
+    btn_quiz.click(fn=lambda h, s: chat("帮我出一道 Python 练习题", h, s),
                    inputs=[chatbot, session_state],
                    outputs=[msg_input, chatbot, session_state])
-    btn_next.click(fn=lambda h, s: quick_send("接下来我该学什么？", h, s),
+    btn_next.click(fn=lambda h, s: chat("接下来我该学什么？", h, s),
                    inputs=[chatbot, session_state],
                    outputs=[msg_input, chatbot, session_state])
     btn_end.click(fn=reset_session,

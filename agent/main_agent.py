@@ -139,6 +139,103 @@ class LearningAgent:
         self.messages.append({"role": "assistant", "content": reply})
         return reply
 
+    def chat_stream(self, user_message: str):
+        """
+        流式对话方法（SSE）：逐字返回 LLM 回复，用于 Gradio 前端。
+
+        与 chat() 逻辑一致，但最终回复使用 stream=True。
+        类比 Java：相当于返回 Flux<String> 而不是 Mono<String>。
+        """
+        # Step 1: 记录用户消息
+        self.session.log_user_message(user_message)
+        self.messages.append({"role": "user", "content": user_message})
+
+        # 第一轮对话时，用用户问题做语义检索补充相关历史
+        if len(self.messages) == 2:
+            try:
+                from memory.retrieval import build_memory_context
+                extra = build_memory_context(self.user_id, current_question=user_message)
+                if extra:
+                    self.messages[0]["content"] += f"\n\n{extra}"
+            except Exception:
+                pass
+
+        # Step 2: 第一次请求 LLM（非流式，因为需要判断是否工具调用）
+        response = self.client.chat.completions.create(
+            model=MODEL,
+            messages=self.messages,
+            tools=TOOL_DEFINITIONS,
+            tool_choice="auto"
+        )
+
+        msg = response.choices[0].message
+
+        # Step 3: 处理工具调用
+        if msg.tool_calls:
+            self.messages.append({
+                "role": "assistant",
+                "content": msg.content or "",
+                "tool_calls": [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.function.name,
+                            "arguments": tc.function.arguments
+                        }
+                    }
+                    for tc in msg.tool_calls
+                ]
+            })
+
+            for tool_call in msg.tool_calls:
+                tool_name = tool_call.function.name
+                tool_args = tool_call.function.arguments
+                print(f"   🔧 调用工具: {tool_name}")
+
+                result = execute_tool(tool_name, tool_args)
+                self.session.log_tool_call(tool_name, json.loads(tool_args) if tool_args else {}, result)
+
+                self.messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "content": result
+                })
+
+            # Step 4: 带工具结果，流式请求最终回复
+            stream = self.client.chat.completions.create(
+                model=MODEL,
+                messages=self.messages,
+                stream=True
+            )
+
+            full_reply = ""
+            for chunk in stream:
+                if chunk.choices and chunk.choices[0].delta.content:
+                    token = chunk.choices[0].delta.content
+                    full_reply += token
+                    yield full_reply  # 逐步返回累积文本
+
+        else:
+            # 无工具调用，直接流式返回
+            # 重新请求一次用流式模式
+            stream = self.client.chat.completions.create(
+                model=MODEL,
+                messages=self.messages,
+                stream=True
+            )
+
+            full_reply = ""
+            for chunk in stream:
+                if chunk.choices and chunk.choices[0].delta.content:
+                    token = chunk.choices[0].delta.content
+                    full_reply += token
+                    yield full_reply
+
+        # Step 5: 记录完整回复
+        self.session.log_assistant_message(full_reply)
+        self.messages.append({"role": "assistant", "content": full_reply})
+
     def on_session_end(self):
         """
         会话结束 Hook，阶段 2 实现自动摘要功能。

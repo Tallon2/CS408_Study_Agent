@@ -1,5 +1,38 @@
 from memory.l2_task import load_task_state
 from memory.l4_profile import load_profile
+from zhipuai import ZhipuAI
+from config import API_KEY, MODEL
+
+
+def rewrite_query(original_query: str, n_rewrites: int = 3) -> list[str]:
+    """
+    Query 重写：用 LLM 把用户原始问题改写为多个语义等价但表述不同的查询。
+    借鉴 StudyCoach 的 3 轮 Query 重写策略，提升检索召回率。
+
+    原理：用户问"快排怎么写"，可能还需要检索"快速排序"、"partition"、"分治排序"。
+    类比 Java：相当于搜索引擎的 Query Expansion / Synonym Expansion。
+    """
+    client = ZhipuAI(api_key=API_KEY)
+    try:
+        resp = client.chat.completions.create(
+            model=MODEL,
+            messages=[
+                {"role": "system", "content": (
+                    "你是搜索查询优化专家。用户会给你一个学习相关的问题，"
+                    "请生成3个语义相同但表述不同的搜索查询，用于提升检索召回率。"
+                    "直接输出3行文本，每行一个查询，不要编号和多余文字。"
+                )},
+                {"role": "user", "content": original_query}
+            ]
+        )
+        rewrites = [
+            line.strip()
+            for line in resp.choices[0].message.content.strip().split("\n")
+            if line.strip()
+        ][:n_rewrites]
+        return [original_query] + rewrites  # 原始query + 改写后的query
+    except Exception:
+        return [original_query]  # 失败时降级为仅原始查询
 
 
 def build_memory_context(user_id: str, current_question: str = "") -> str:
@@ -50,13 +83,22 @@ def build_memory_context(user_id: str, current_question: str = "") -> str:
             f"- 学习节奏：{prefs.get('pace', '未知')}"
         )
 
-    # L3：向量语义检索（阶段4实现）
+    # L3：向量语义检索（带 Query 重写，提升召回率）
     if current_question:
         try:
             retriever = MemoryRetriever()
-            relevant = retriever.search_relevant(current_question, top_k=3)
-            if relevant:
-                history_text = "\n".join(f"- {r}" for r in relevant)
+            # 用 Query 重写生成多个查询，合并去重结果
+            queries = rewrite_query(current_question)
+            all_results = []
+            seen = set()
+            for q in queries:
+                results = retriever.search_relevant(q, top_k=2)
+                for r in results:
+                    if r not in seen:
+                        seen.add(r)
+                        all_results.append(r)
+            if all_results:
+                history_text = "\n".join(f"- {r}" for r in all_results[:5])
                 parts.append(f"## 相关历史学习记录\n{history_text}")
         except Exception:
             pass
