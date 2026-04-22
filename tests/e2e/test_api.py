@@ -1,14 +1,18 @@
-from zhipuai import ZhipuAI
-from config import API_KEY, MODEL
+import os
+import sys
+_ROOT = os.path.dirname(os.path.abspath(__file__))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+
+from core.llm_client import get_llm_client
 
 def test_connection():
-    print(f"🔍 正在测试智谱 AI 连接...")
-    print(f"   模型: {MODEL}")
-    print(f"   API Key: {API_KEY[:8]}...{API_KEY[-4:]}\n")
+    client = get_llm_client()
+    print(f"🔍 正在测试 LLM 连接...")
+    print(f"   模型: {client.default_model}\n")
 
-    client = ZhipuAI(api_key=API_KEY)
     response = client.chat.completions.create(
-        model=MODEL,
+        model=client.default_model,
         messages=[{"role": "user", "content": "你好，请用一句话介绍自己"}]
     )
 

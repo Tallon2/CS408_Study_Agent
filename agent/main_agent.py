@@ -1,248 +1,357 @@
-import json
-from zhipuai import ZhipuAI
-from config import API_KEY, MODEL
-from agent.tools import TOOL_DEFINITIONS, execute_tool
-from memory.l1_session import SessionManager
+"""
+agent/main_agent.py — LangGraph Agent 对外统一入口
 
-# ============================================================
-# System Prompt：给 LLM 定角色 + 行为规范
-# 类比 Java：这是构造函数里注入的"行为策略配置"
-# ============================================================
-SYSTEM_PROMPT = """你是一个耐心专业的编程学习助手，专门帮助用户学习 Python。
+职责（Phase 3 精简后）：
+  - 暴露 LangGraphAgent 的公共接口：chat() / chat_stream() / chat_stream_async()
+  - 负责对话历史管理与 LangGraph 图的调用调度
+  - 不包含会话生命周期管理（由 agent/runtime.py 负责）
+  - 不包含旧版 LearningAgent（已迁移至 agent/legacy_agent.py）
 
-你的行为规范：
-1. 当用户想了解某个知识点时 → 调用 explain_concept 工具
-2. 当用户学完一个知识点，想测试自己 → 调用 generate_quiz 工具
-3. 当用户回答了题目 → 调用 check_answer 工具判断对错
-4. 当用户问"接下来学什么"或对话结束时 → 调用 recommend_next 工具
-
-注意：
-- 优先调用工具，而不是直接回答
-- 语气友好，鼓励为主
-- 如果用户有 Java 基础，可以用 Java 类比解释 Python 概念
+设计约束：
+  - 不得直接操作文件系统或数据库
+  - 不得直接实例化 ZhipuAI（必须通过 get_llm_client()）
+  - AgentState 初始化使用 runtime.build_initial_state()
+  - 记忆同步使用 runtime.sync_memory_snapshot()
+  - 会话结束使用 runtime.handle_session_end()
 """
 
+import logging
+from typing import AsyncGenerator, Generator
 
-class LearningAgent:
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
+
+from memory.l1_session import SessionManager
+from memory.retrieval import build_memory_context
+from agent.runtime import (
+    build_initial_state,
+    sync_memory_snapshot,
+    handle_session_end,
+    load_initial_memory,
+    SYSTEM_PROMPT,
+)
+
+# 向后兼容：外部代码可能 from agent.main_agent import LearningAgent
+from agent.legacy_agent import LearningAgent  # noqa: F401
+
+logger = logging.getLogger(__name__)
+
+# ============================================================
+# LangGraph Agent — 对外统一入口
+# ============================================================
+
+class LangGraphAgent:
     """
-    主 Agent 类，负责：
-    1. 维护对话历史（messages 列表）
-    2. 调用 LLM（智谱 AI）
-    3. 处理 Function Calling 工具调用
-    4. 预留 hook 入口供后续阶段扩展
+    408 学习助手 Agent 的对外统一入口。
 
-    类比 Java：这是一个有状态的 Service 类
+    使用方式：
+        agent = LangGraphAgent(user_id="user_001")
+        response = agent.chat("解释一下 KMP 算法")
+        async for chunk in agent.chat_stream_async("出一道操作系统题"):
+            yield chunk
+
+    设计说明：
+        - AgentState 初始化委托给 runtime.build_initial_state()
+        - 记忆快照同步委托给 runtime.sync_memory_snapshot()
+        - 会话结束钩子委托给 runtime.handle_session_end()
     """
 
-    def __init__(self, user_id: str):
+    def __init__(self, user_id: str = "student_001") -> None:
         self.user_id = user_id
-        self.client = ZhipuAI(api_key=API_KEY)
         self.session = SessionManager(user_id)
 
-        # ✅ SessionStart Hook：自动注入记忆
-        from memory.retrieval import build_memory_context
-        memory_context = build_memory_context(user_id)
-        system_prompt = SYSTEM_PROMPT
-        if memory_context:
-            system_prompt = SYSTEM_PROMPT + f"\n\n{memory_context}"
-            print("🧠 已加载历史记忆\n")
+        # 加载初始记忆快照（L2 任务状态 + L4 用户画像）
+        self._memory_l2: dict
+        self._memory_l4: dict
+        self._memory_l2, self._memory_l4 = load_initial_memory()
+        self._current_quiz_answer: str = ""
 
-        # messages 是对话历史，LLM 每次都能看到完整上下文
-        # 类比 Java：这是一个 List<Message>，贯穿整个会话
-        self.messages = [{"role": "system", "content": system_prompt}]
-        print(f"🤖 Agent 初始化完成，用户：{user_id}")
+        # 编译 LangGraph 状态图
+        from agent.graph.graph import get_graph, get_prep_graph
+        self._graph = get_graph()
+        self._prep_graph = get_prep_graph()
 
-    def chat(self, user_message: str) -> str:
+        # 初始化对话历史，注入系统提示 + 历史记忆上下文
+        memory_ctx = build_memory_context(user_id)
+        system_content = SYSTEM_PROMPT + (f"\n\n{memory_ctx}" if memory_ctx else "")
+        self._messages: list = [SystemMessage(content=system_content)]
+
+        logger.info("LangGraphAgent 初始化完成 user_id=%s", user_id)
+
+    # ──────────────────────────────────────────────────────────
+    # 公共接口
+    # ──────────────────────────────────────────────────────────
+
+    def chat(self, user_message: str, session_id: str = "", user_id: str | None = None) -> str:
         """
-        核心对话方法：
-        1. 把用户消息加入历史
-        2. 请求 LLM（带工具定义）
-        3. 如果 LLM 决定调用工具 → 执行工具 → 把结果再给 LLM → 得到最终回复
-        4. 如果 LLM 直接回答 → 直接返回
+        同步对话，返回完整回复字符串。
 
-        这个"工具调用 → 再次请求 LLM"的模式就是 Function Calling 的核心流程
+        Args:
+            user_message: 用户输入文本
+            session_id:   保留参数，兼容 API 层调用签名
+            user_id:      保留参数，兼容 API 层调用签名
         """
-        # Step 1: 记录用户消息
         self.session.log_user_message(user_message)
-        self.messages.append({"role": "user", "content": user_message})
+        self._messages.append(HumanMessage(content=user_message))
 
-        # 第一轮对话时，用用户问题做语义检索补充相关历史
-        if len(self.messages) == 2:  # system + 第一条user
-            try:
-                from memory.retrieval import build_memory_context
-                extra = build_memory_context(self.user_id, current_question=user_message)
-                if extra:
-                    # 追加到 system prompt
-                    self.messages[0]["content"] += f"\n\n{extra}"
-            except Exception:
-                pass
-
-        # Step 2: 第一次请求 LLM（带工具列表）
-        response = self.client.chat.completions.create(
-            model=MODEL,
-            messages=self.messages,
-            tools=TOOL_DEFINITIONS,
-            tool_choice="auto"   # auto = LLM 自己决定要不要用工具
+        initial_state = build_initial_state(
+            messages=self._messages,
+            memory_l2=self._memory_l2,
+            memory_l4=self._memory_l4,
+            current_quiz_answer=self._current_quiz_answer,
         )
 
-        msg = response.choices[0].message
+        try:
+            result = self._graph.invoke(initial_state)
+            reply: str = result.get("final_response", "")
 
-        # Step 3: 判断 LLM 是否决定调用工具
-        if msg.tool_calls:
-            # LLM 决定调用工具，把这条消息加入历史
-            # ⚠️ 必须转成字典格式，不能直接 append SDK 对象
-            self.messages.append({
-                "role": "assistant",
-                "content": msg.content or "",
-                "tool_calls": [
-                    {
-                        "id": tc.id,
-                        "type": "function",
-                        "function": {
-                            "name": tc.function.name,
-                            "arguments": tc.function.arguments
-                        }
-                    }
-                    for tc in msg.tool_calls
-                ]
-            })
+            sync_memory_snapshot(self, result)
 
-            # 执行所有工具调用（LLM 可能同时调用多个工具）
-            for tool_call in msg.tool_calls:
-                tool_name = tool_call.function.name
-                tool_args = tool_call.function.arguments
-                print(f"   🔧 调用工具: {tool_name}")
+            self._messages.append(AIMessage(content=reply))
+            self.session.log_assistant_message(reply)
+            return reply
 
-                result = execute_tool(tool_name, tool_args)
-                self.session.log_tool_call(tool_name, json.loads(tool_args) if tool_args else {}, result)
+        except Exception as exc:
+            err_msg = f"[系统错误] {exc}"
+            logger.error("chat 执行失败 user_id=%s: %s", self.user_id, exc)
+            self.session.log_assistant_message(err_msg)
+            return err_msg
 
-                # 把工具结果加入历史，role 必须是 "tool"
-                self.messages.append({
-                    "role": "tool",
-                    "tool_call_id": tool_call.id,
-                    "content": result
-                })
-
-            # Step 4: 带着工具结果，第二次请求 LLM 生成最终回复
-            final_response = self.client.chat.completions.create(
-                model=MODEL,
-                messages=self.messages
-            )
-            reply = final_response.choices[0].message.content
-
-        else:
-            # LLM 直接回答，不调用工具
-            reply = msg.content
-
-        # Step 5: 把助手回复加入历史，供下一轮对话使用
-        self.session.log_assistant_message(reply)
-        self.messages.append({"role": "assistant", "content": reply})
-        return reply
-
-    def chat_stream(self, user_message: str):
+    async def chat_stream_async(
+        self,
+        user_message: str,
+        session_id: str = "",
+        on_rag_trace: object | None = None,
+    ):
         """
-        流式对话方法（SSE）：逐字返回 LLM 回复，用于 Gradio 前端。
+        异步流式对话（async generator）— 供 FastAPI SSE 端点使用。
 
-        与 chat() 逻辑一致，但最终回复使用 stream=True。
-        类比 Java：相当于返回 Flux<String> 而不是 Mono<String>。
+        架构：asyncio.Queue + 后台 Task（准备图 + LLM 流式）
+          1. 后台 worker 在线程池中运行 LangGraph 前半段（intent→rag→tool），
+             通过 call_soon_threadsafe 实时将 pipeline 事件推入队列
+          2. 拿到中间 state 后调用 response_generator_stream() 逐 token 推入队列
+          3. 最后在线程池中运行 memory_update 节点更新记忆
+          4. 主循环持续从队列取事件并 yield
+
+        Args:
+            user_message: 用户输入文本
+            session_id:   保留参数，兼容 API 层调用签名
+            on_rag_trace: 保留参数，可选 RAG 追踪回调
+
+        Yields:
+            dict：
+              {"type": "token",    "content": str}     — 增量 token
+              {"type": "pipeline", "stage": str, ...}  — RAG 管线事件
+              {"type": "done",     "content": str}     — 完成信号
+              {"type": "error",    "content": str}     — 错误信号
         """
-        # Step 1: 记录用户消息
+        import asyncio
+        from agent.graph.nodes.response_generator import response_generator_stream
+        from agent.graph.nodes.memory_update import memory_update_node
+
         self.session.log_user_message(user_message)
-        self.messages.append({"role": "user", "content": user_message})
+        self._messages.append(HumanMessage(content=user_message))
 
-        # 第一轮对话时，用用户问题做语义检索补充相关历史
-        if len(self.messages) == 2:
-            try:
-                from memory.retrieval import build_memory_context
-                extra = build_memory_context(self.user_id, current_question=user_message)
-                if extra:
-                    self.messages[0]["content"] += f"\n\n{extra}"
-            except Exception:
-                pass
-
-        # Step 2: 第一次请求 LLM（非流式，因为需要判断是否工具调用）
-        response = self.client.chat.completions.create(
-            model=MODEL,
-            messages=self.messages,
-            tools=TOOL_DEFINITIONS,
-            tool_choice="auto"
+        initial_state = build_initial_state(
+            messages=self._messages,
+            memory_l2=self._memory_l2,
+            memory_l4=self._memory_l4,
+            current_quiz_answer=self._current_quiz_answer,
         )
 
-        msg = response.choices[0].message
+        output_queue: asyncio.Queue = asyncio.Queue()
+        loop = asyncio.get_running_loop()
+        final_reply = ""
 
-        # Step 3: 处理工具调用
-        if msg.tool_calls:
-            self.messages.append({
-                "role": "assistant",
-                "content": msg.content or "",
-                "tool_calls": [
-                    {
-                        "id": tc.id,
-                        "type": "function",
-                        "function": {
-                            "name": tc.function.name,
-                            "arguments": tc.function.arguments
-                        }
-                    }
-                    for tc in msg.tool_calls
-                ]
-            })
+        async def _graph_worker() -> None:
+            nonlocal final_reply
+            try:
+                # ── Phase 1: 线程池中运行 LangGraph 前半段（不含 response_generator）──
+                def _run_graph_sync():
+                    last_state = None
+                    rag_trace_emitted = False
 
-            for tool_call in msg.tool_calls:
-                tool_name = tool_call.function.name
-                tool_args = tool_call.function.arguments
-                print(f"   🔧 调用工具: {tool_name}")
+                    for step in self._prep_graph.stream(initial_state, stream_mode="values"):
+                        last_state = step
 
-                result = execute_tool(tool_name, tool_args)
-                self.session.log_tool_call(tool_name, json.loads(tool_args) if tool_args else {}, result)
+                        if step.get("intent") and step["intent"] != "unknown" and not step.get("final_response"):
+                            loop.call_soon_threadsafe(output_queue.put_nowait, {
+                                "type": "pipeline", "stage": "intent",
+                                "intent": step["intent"], "tool": step.get("tool_name", ""),
+                            })
 
-                self.messages.append({
-                    "role": "tool",
-                    "tool_call_id": tool_call.id,
-                    "content": result
-                })
+                        if step.get("rag_context") and not step.get("final_response"):
+                            trace = step.get("rag_pipeline_trace", [])
+                            if trace and not rag_trace_emitted:
+                                for t in trace:
+                                    loop.call_soon_threadsafe(output_queue.put_nowait, {
+                                        "type": "pipeline", "stage": f"rag:{t['step']}", **t,
+                                    })
+                                rag_trace_emitted = True
+                            loop.call_soon_threadsafe(output_queue.put_nowait, {
+                                "type": "pipeline", "stage": "rag",
+                                "context_preview": step["rag_context"][:100],
+                            })
 
-            # Step 4: 带工具结果，流式请求最终回复
-            stream = self.client.chat.completions.create(
-                model=MODEL,
-                messages=self.messages,
-                stream=True
-            )
+                        if step.get("tool_result") and not step.get("final_response"):
+                            loop.call_soon_threadsafe(output_queue.put_nowait, {
+                                "type": "pipeline", "stage": "tool",
+                                "tool_name": step.get("tool_name", ""),
+                                "result_preview": step["tool_result"][:80],
+                            })
 
-            full_reply = ""
-            for chunk in stream:
-                if chunk.choices and chunk.choices[0].delta.content:
-                    token = chunk.choices[0].delta.content
-                    full_reply += token
-                    yield full_reply  # 逐步返回累积文本
+                    return last_state
 
-        else:
-            # 无工具调用，直接流式返回
-            # 重新请求一次用流式模式
-            stream = self.client.chat.completions.create(
-                model=MODEL,
-                messages=self.messages,
-                stream=True
-            )
+                last_state = await loop.run_in_executor(None, _run_graph_sync)
 
-            full_reply = ""
-            for chunk in stream:
-                if chunk.choices and chunk.choices[0].delta.content:
-                    token = chunk.choices[0].delta.content
-                    full_reply += token
-                    yield full_reply
+                if not last_state:
+                    await output_queue.put({"type": "error", "content": "图执行未返回任何状态"})
+                    return
 
-        # Step 5: 记录完整回复
-        self.session.log_assistant_message(full_reply)
-        self.messages.append({"role": "assistant", "content": full_reply})
+                # 前半段已包含完整 final_response（同步节点处理完毕）
+                if last_state.get("final_response"):
+                    final_reply = last_state["final_response"]
+                    sync_memory_snapshot(self, last_state)
+                    for char in final_reply:
+                        await output_queue.put({"type": "token", "content": char})
+                    await output_queue.put({"type": "done", "content": final_reply})
+                    return
 
-    def on_session_end(self):
+                # ── Phase 2: 发送"LLM 生成中"管线事件 ──
+                await output_queue.put({"type": "pipeline", "stage": "llm_gen"})
+
+                # ── Phase 3: 线程池中流式调用 LLM，逐 token 推入队列 ──
+                def _run_stream_llm():
+                    done_signal = None
+                    for item in response_generator_stream(last_state):
+                        if isinstance(item, dict) and item.get("__done__"):
+                            done_signal = item
+                        else:
+                            loop.call_soon_threadsafe(
+                                output_queue.put_nowait,
+                                {"type": "token", "content": item},
+                            )
+                    return done_signal
+
+                done_signal = await loop.run_in_executor(None, _run_stream_llm)
+
+                if done_signal:
+                    final_reply = done_signal["full_response"]
+                    self._current_quiz_answer = done_signal.get(
+                        "quiz_answer", self._current_quiz_answer
+                    )
+                    await output_queue.put({"type": "done", "content": final_reply})
+                else:
+                    await output_queue.put({"type": "done", "content": ""})
+
+                # ── Phase 4: 线程池中运行 memory_update 节点 ──
+                try:
+                    mem_result = await loop.run_in_executor(
+                        None, memory_update_node, {**last_state, "final_response": final_reply}
+                    )
+                    sync_memory_snapshot(self, mem_result)
+                except Exception as exc:
+                    logger.warning("memory_update 执行失败 user_id=%s: %s", self.user_id, exc)
+
+            except Exception as exc:
+                final_reply = f"[系统错误] {exc}"
+                logger.error("chat_stream_async worker 失败 user_id=%s: %s", self.user_id, exc)
+                await output_queue.put({"type": "error", "content": final_reply})
+            finally:
+                await output_queue.put(None)  # 哨兵：通知主循环 worker 已完成
+
+        worker_task = asyncio.create_task(_graph_worker())
+
+        try:
+            while True:
+                event = await output_queue.get()
+                if event is None:
+                    break
+                yield event
+        except GeneratorExit:
+            worker_task.cancel()
+            try:
+                await worker_task
+            except asyncio.CancelledError:
+                pass
+            raise
+        finally:
+            if not worker_task.done():
+                worker_task.cancel()
+
+        if final_reply:
+            self._messages.append(AIMessage(content=final_reply))
+            self.session.log_assistant_message(final_reply)
+
+    def chat_stream(self, user_message: str, session_id: str = "") -> Generator[dict, None, None]:
         """
-        会话结束 Hook，阶段 2 实现自动摘要功能。
-        类比 Java：这是一个生命周期回调方法（类似 @PreDestroy）
+        同步流式对话（保留向后兼容）。
+
+        注意：新的 SSE 端点应优先使用 chat_stream_async()。
+        此方法仅保留给旧版同步场景（如 Gradio）使用。
+
+        Yields:
+            dict：{"type": "pipeline"|"token"|"done"|"error", ...}
         """
-        from memory.hooks import on_session_stop
-        digest = on_session_stop(self.session)
-        if digest:
-            print("\n📝 本次学习记录已保存！")
-            print(f"   📁 路径：storage/sessions/{self.session.session_id}/")
+        import re
+
+        self.session.log_user_message(user_message)
+        self._messages.append(HumanMessage(content=user_message))
+
+        initial_state = build_initial_state(
+            messages=self._messages,
+            memory_l2=self._memory_l2,
+            memory_l4=self._memory_l4,
+            current_quiz_answer=self._current_quiz_answer,
+        )
+
+        final_reply = ""
+        rag_trace_emitted = False
+
+        try:
+            for step in self._graph.stream(initial_state, stream_mode="values"):
+                if step.get("intent") and step["intent"] != "unknown" and not step.get("final_response"):
+                    yield {"type": "pipeline", "stage": "intent",
+                           "intent": step["intent"], "tool": step.get("tool_name", "")}
+
+                if step.get("rag_context") and not step.get("final_response"):
+                    trace = step.get("rag_pipeline_trace", [])
+                    if trace and not rag_trace_emitted:
+                        for t in trace:
+                            yield {"type": "pipeline", "stage": f"rag:{t['step']}", **t}
+                        rag_trace_emitted = True
+                    yield {"type": "pipeline", "stage": "rag",
+                           "context_preview": step["rag_context"][:100]}
+
+                if step.get("tool_result") and not step.get("final_response"):
+                    yield {"type": "pipeline", "stage": "tool",
+                           "tool_name": step.get("tool_name", ""),
+                           "result_preview": step["tool_result"][:80]}
+
+                if step.get("final_response"):
+                    final_reply = step["final_response"]
+                    sync_memory_snapshot(self, step)
+                    sentences = re.split(r'(?<=[。！？\n])', final_reply)
+                    accumulated = ""
+                    for sentence in sentences:
+                        accumulated += sentence
+                        yield {"type": "token", "content": accumulated}
+                    yield {"type": "done", "content": final_reply}
+                    break
+
+        except Exception as exc:
+            final_reply = f"[系统错误] {exc}"
+            logger.error("chat_stream 执行失败 user_id=%s: %s", self.user_id, exc)
+            yield {"type": "error", "content": final_reply}
+
+        if final_reply:
+            self._messages.append(AIMessage(content=final_reply))
+            self.session.log_assistant_message(final_reply)
+
+    async def on_session_end(self, session_id: str = "") -> None:
+        """
+        会话结束回调，触发 L1-L4 全量持久化。
+
+        Args:
+            session_id: 保留参数，兼容 API 层调用签名
+        """
+        handle_session_end(self)

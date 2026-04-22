@@ -2,8 +2,7 @@ import json
 import os
 import re
 from datetime import datetime
-from zhipuai import ZhipuAI
-from config import API_KEY, MODEL
+from core.llm_client import get_llm_client
 
 SCRIBE_PROMPT = """请根据以下学习对话记录，生成结构化摘要。严格按 JSON 格式输出，不要有任何多余文字：
 
@@ -34,9 +33,9 @@ def on_session_stop(session_manager) -> dict:
     if not conversation.strip():
         return {}
 
-    client = ZhipuAI(api_key=API_KEY)
+    client = get_llm_client()
     response = client.chat.completions.create(
-        model=MODEL,
+        model=client.default_model,
         messages=[
             {"role": "system", "content": "你是一个精确的学习记录分析师。只输出 JSON，不要多余文字。"},
             {"role": "user", "content": SCRIBE_PROMPT.replace("{conversation}", conversation)}

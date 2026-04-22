@@ -1,0 +1,242 @@
+[
+  {
+    "id": "DS_001",
+    "subject": "数据结构",
+    "query": "快速排序的平均时间复杂度是多少",
+    "relevant_keywords": ["快速排序", "O(nlogn)", "分治", "平均复杂度"],
+    "expected_sources": ["textbooks"],
+    "difficulty": "easy"
+  },
+  {
+    "id": "DS_002",
+    "subject": "数据结构",
+    "query": "二叉树的前序中序后序遍历有什么区别",
+    "relevant_keywords": ["前序遍历", "中序遍历", "后序遍历", "二叉树", "根节点"],
+    "expected_sources": ["textbooks"],
+    "difficulty": "easy"
+  },
+  {
+    "id": "DS_003",
+    "subject": "数据结构",
+    "query": "堆排序的时间复杂度和空间复杂度分析",
+    "relevant_keywords": ["堆排序", "O(nlogn)", "完全二叉树", "原地排序"],
+    "expected_sources": ["textbooks", "exam_questions"],
+    "difficulty": "medium"
+  },
+  {
+    "id": "DS_004",
+    "subject": "数据结构",
+    "query": "AVL树和红黑树的区别是什么",
+    "relevant_keywords": ["AVL树", "红黑树", "平衡因子", "旋转", "自平衡"],
+    "expected_sources": ["textbooks"],
+    "difficulty": "medium"
+  },
+  {
+    "id": "DS_005",
+    "subject": "数据结构",
+    "query": "图的深度优先搜索和广度优先搜索算法",
+    "relevant_keywords": ["DFS", "BFS", "深度优先", "广度优先", "邻接表"],
+    "expected_sources": ["textbooks", "exam_questions"],
+    "difficulty": "medium"
+  },
+  {
+    "id": "DS_006",
+    "subject": "数据结构",
+    "query": "哈夫曼树的构造过程和应用",
+    "relevant_keywords": ["哈夫曼树", "最优二叉树", "带权路径长度", "哈夫曼编码"],
+    "expected_sources": ["textbooks"],
+    "difficulty": "medium"
+  },
+  {
+    "id": "DS_007",
+    "subject": "数据结构",
+    "query": "B树和B+树的区别及数据库索引应用",
+    "relevant_keywords": ["B树", "B+树", "磁盘", "索引", "阶数", "数据库"],
+    "expected_sources": ["textbooks"],
+    "difficulty": "hard"
+  },
+  {
+    "id": "DS_008",
+    "subject": "数据结构",
+    "query": "KMP算法的next数组求法及时间复杂度",
+    "relevant_keywords": ["KMP", "next数组", "模式匹配", "前缀函数", "O(m+n)"],
+    "expected_sources": ["textbooks", "exam_questions"],
+    "difficulty": "hard"
+  },
+  {
+    "id": "OS_001",
+    "subject": "操作系统",
+    "query": "进程和线程的区别是什么",
+    "relevant_keywords": ["进程", "线程", "资源分配", "调度单位", "PCB"],
+    "expected_sources": ["textbooks"],
+    "difficulty": "easy"
+  },
+  {
+    "id": "OS_002",
+    "subject": "操作系统",
+    "query": "死锁产生的四个必要条件是什么",
+    "relevant_keywords": ["死锁", "互斥条件", "占有且等待", "不可剥夺", "循环等待"],
+    "expected_sources": ["textbooks", "exam_questions"],
+    "difficulty": "easy"
+  },
+  {
+    "id": "OS_003",
+    "subject": "操作系统",
+    "query": "页式存储管理和段式存储管理的比较",
+    "relevant_keywords": ["页式存储", "段式存储", "页表", "段表", "内部碎片", "外部碎片"],
+    "expected_sources": ["textbooks"],
+    "difficulty": "easy"
+  },
+  {
+    "id": "OS_004",
+    "subject": "操作系统",
+    "query": "银行家算法如何避免死锁",
+    "relevant_keywords": ["银行家算法", "安全状态", "资源分配", "最大需求矩阵"],
+    "expected_sources": ["textbooks", "exam_questions"],
+    "difficulty": "medium"
+  },
+  {
+    "id": "OS_005",
+    "subject": "操作系统",
+    "query": "进程调度算法有哪些各有什么特点",
+    "relevant_keywords": ["FCFS", "SJF", "优先级调度", "时间片轮转", "多级反馈队列"],
+    "expected_sources": ["textbooks"],
+    "difficulty": "medium"
+  },
+  {
+    "id": "OS_006",
+    "subject": "操作系统",
+    "query": "虚拟内存的工作原理和缺页中断处理",
+    "relevant_keywords": ["虚拟内存", "缺页中断", "页面置换", "局部性原理"],
+    "expected_sources": ["textbooks", "key_points"],
+    "difficulty": "medium"
+  },
+  {
+    "id": "OS_007",
+    "subject": "操作系统",
+    "query": "LRU页面置换算法的实现原理",
+    "relevant_keywords": ["LRU", "最近最久未使用", "页面置换", "栈实现", "抖动"],
+    "expected_sources": ["textbooks", "exam_questions"],
+    "difficulty": "hard"
+  },
+  {
+    "id": "OS_008",
+    "subject": "操作系统",
+    "query": "信号量机制如何解决生产者消费者问题",
+    "relevant_keywords": ["信号量", "PV操作", "生产者消费者", "互斥", "同步"],
+    "expected_sources": ["textbooks", "exam_questions"],
+    "difficulty": "hard"
+  },
+  {
+    "id": "CN_001",
+    "subject": "计算机网络",
+    "query": "TCP三次握手的过程是怎样的",
+    "relevant_keywords": ["TCP", "三次握手", "SYN", "ACK", "连接建立"],
+    "expected_sources": ["textbooks"],
+    "difficulty": "easy"
+  },
+  {
+    "id": "CN_002",
+    "subject": "计算机网络",
+    "query": "OSI七层模型各层的功能",
+    "relevant_keywords": ["OSI", "七层模型", "物理层", "数据链路层", "网络层", "传输层"],
+    "expected_sources": ["textbooks"],
+    "difficulty": "easy"
+  },
+  {
+    "id": "CN_003",
+    "subject": "计算机网络",
+    "query": "TCP和UDP的区别及适用场景",
+    "relevant_keywords": ["TCP", "UDP", "可靠传输", "无连接", "流量控制"],
+    "expected_sources": ["textbooks", "exam_questions"],
+    "difficulty": "easy"
+  },
+  {
+    "id": "CN_004",
+    "subject": "计算机网络",
+    "query": "IP子网划分和CIDR无类域间路由",
+    "relevant_keywords": ["子网划分", "CIDR", "子网掩码", "网络前缀", "超网"],
+    "expected_sources": ["textbooks", "exam_questions"],
+    "difficulty": "easy"
+  },
+  {
+    "id": "CN_005",
+    "subject": "计算机网络",
+    "query": "TCP拥塞控制的慢启动和拥塞避免算法",
+    "relevant_keywords": ["拥塞控制", "慢启动", "拥塞避免", "快重传", "快恢复", "cwnd"],
+    "expected_sources": ["textbooks"],
+    "difficulty": "medium"
+  },
+  {
+    "id": "CN_006",
+    "subject": "计算机网络",
+    "query": "DNS域名解析的工作过程",
+    "relevant_keywords": ["DNS", "域名解析", "递归查询", "迭代查询", "根服务器"],
+    "expected_sources": ["textbooks", "key_points"],
+    "difficulty": "medium"
+  },
+  {
+    "id": "CN_007",
+    "subject": "计算机网络",
+    "query": "HTTPS的TLS握手过程和证书验证",
+    "relevant_keywords": ["HTTPS", "TLS", "SSL", "数字证书", "非对称加密", "握手"],
+    "expected_sources": ["textbooks"],
+    "difficulty": "hard"
+  },
+  {
+    "id": "CO_001",
+    "subject": "计算机组成原理",
+    "query": "原码补码反码的转换规则",
+    "relevant_keywords": ["原码", "补码", "反码", "符号位", "数值表示"],
+    "expected_sources": ["textbooks"],
+    "difficulty": "easy"
+  },
+  {
+    "id": "CO_002",
+    "subject": "计算机组成原理",
+    "query": "Cache的工作原理和替换策略",
+    "relevant_keywords": ["Cache", "高速缓存", "局部性原理", "命中率", "替换算法"],
+    "expected_sources": ["textbooks"],
+    "difficulty": "medium"
+  },
+  {
+    "id": "CO_003",
+    "subject": "计算机组成原理",
+    "query": "流水线技术的相关冲突类型及解决方法",
+    "relevant_keywords": ["流水线", "结构冲突", "数据冲突", "控制冲突", "停顿", "转发"],
+    "expected_sources": ["textbooks", "exam_questions"],
+    "difficulty": "medium"
+  },
+  {
+    "id": "CO_004",
+    "subject": "计算机组成原理",
+    "query": "DMA直接存储器访问的工作方式",
+    "relevant_keywords": ["DMA", "直接存储器访问", "总线", "数据传输", "中断"],
+    "expected_sources": ["textbooks"],
+    "difficulty": "medium"
+  },
+  {
+    "id": "CO_005",
+    "subject": "计算机组成原理",
+    "query": "MIPS指令集的寻址方式",
+    "relevant_keywords": ["MIPS", "寻址方式", "立即数寻址", "寄存器寻址", "基址寻址"],
+    "expected_sources": ["textbooks", "key_points"],
+    "difficulty": "medium"
+  },
+  {
+    "id": "CO_006",
+    "subject": "计算机组成原理",
+    "query": "浮点数的IEEE 754标准表示格式",
+    "relevant_keywords": ["IEEE 754", "浮点数", "单精度", "双精度", "尾数", "阶码"],
+    "expected_sources": ["textbooks"],
+    "difficulty": "medium"
+  },
+  {
+    "id": "CO_007",
+    "subject": "计算机组成原理",
+    "query": "中断处理过程和中断向量表的作用",
+    "relevant_keywords": ["中断", "中断向量表", "中断处理程序", "保护现场", "恢复现场"],
+    "expected_sources": ["textbooks", "exam_questions"],
+    "difficulty": "medium"
+  }
+]

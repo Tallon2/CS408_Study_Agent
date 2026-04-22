@@ -1,1110 +1,464 @@
-# 个人学习助手 Agent —— 完整开发文档
+# 408 考研 AI 学习教练系统 (Study Coach 408)
 
-## 目录
+## 📖 项目简介
 
-*   [学习清单](#学习清单)
-*   [阶段 0：环境搭建](#阶段-0环境搭建day-1)
-*   [阶段 1：裸 Agent 对话循环](#阶段-1裸-agent-对话循环day-2-3)
-*   [阶段 2：L1 会话状态 + 事件日志](#阶段-2l1-会话状态--事件日志day-4-6)
-*   [阶段 3：L2 任务状态 + L4 用户画像 + 记忆注入](#阶段-3l2-任务状态--l4-用户画像--记忆注入day-7-11)
-*   [阶段 4：向量语义检索](#阶段-4向量语义检索day-12-14)
-*   [阶段 5：L3 知识沉淀 + 整体打磨](#阶段-5l3-知识沉淀--整体打磨day-15-20)
-*   [最终检查清单](#最终检查清单)
+一个面向 408 考研（数据结构、操作系统、计算机网络、计算机组成原理）的 AI 学习教练系统。系统基于 **LangGraph 状态图** 编排 Agent 工作流，结合 **四层分层记忆架构** 实现个性化学习追踪，通过 **混合检索 RAG 管线** 提供精准的知识问答，并配有 Vue 3 前端实现完整的交互体验。
 
-***
+**三大核心亮点：**
+- 🧠 **四层分层记忆**（L1 会话状态 → L2 任务状态 → L3 知识沉淀 → L4 用户画像），实现跨会话的个性化学习追踪
+- 🔍 **混合检索 RAG 管线**（Query 重写 → BM25 + 向量双路检索 → RRF 融合 → 评分门控），Hit@5 达 **0.92**，MRR 达 **0.78**
+- 🤖 **LangGraph 状态图编排**（意图路由 → 多分支处理 → 记忆更新），支持 study / plan / review / unknown 四种意图自动分流
 
-## 学习清单
+---
 
-> 不需要精通每一项，到"能用"即可。带 ⭐ 的是核心必学项。
+## ✨ 核心特性
 
-### 1. Python 基础 ⭐
+- **四层分层记忆系统（L1-L4）**
+  - L1 会话状态：append-only 事件日志 + 会话摘要
+  - L2 任务状态：学习计划与任务进度追踪（SQLite DB，JSON fallback）
+  - L3 知识沉淀：知识库索引（教材、真题、要点，共 ~2,370 chunks）
+  - L4 用户画像：掌握程度、薄弱点、学习偏好（SQLite DB，JSON fallback）
 
-*   数据类型、函数、类、模块
-*   文件读写（JSON / JSONL / Markdown）
-*   异步基础（`asyncio` 了解即可，本项目暂不强依赖）
+- **混合检索 RAG 管线**
+  - Query 重写（expand / decompose 策略）
+  - BM25 关键词检索（jieba 分词）+ 向量语义检索（zhipuai embedding-3，1024 维）
+  - RRF（Reciprocal Rank Fusion，k=60）融合排序
+  - 评分门控：低于阈值自动触发 Query 重写二次检索
+  - Reranker 三级降级链：Jina API → SiliconFlow API → LLM Rerank → 原序兜底
 
-### 2. LLM API 调用 ⭐
+- **LangGraph 状态图编排**
+  - 意图路由（LLM 语义分类）→ 四分支条件路由
+  - study: RAG → 工具执行 → 响应生成
+  - plan: 工具执行 → 响应生成
+  - review: RAG → 响应生成（已修复 review 无法获取 RAG 上下文的 bug）
+  - unknown: 直接 LLM 响应
+  - 所有分支汇聚 → 记忆更新 → END
 
-*   OpenAI / Anthropic / 国内大模型（DeepSeek、智谱等）的 Chat Completion API
-*   Function Calling / Tool Use 机制
-*   System Prompt 设计
-*   Token 概念与 Context Window 限制
+- **FastAPI 后端 + Vue 3 前端**
+  - JWT 认证、SSE 流式输出、学习计划 CRUD
+  - Ant Design Vue UI、Markdown 渲染、代码高亮
 
-### 3. 向量检索基础 ⭐
+- **RAG 过程实时可视化**
+  - 前端 RAGProcessPanel 展示检索管线每一步的状态与结果
 
-*   Embedding（文本向量化）是什么
-*   ChromaDB 或 FAISS 的基本用法
-*   相似度搜索的直觉理解（不需要深入数学）
+- **Docker 一键部署**
+  - docker-compose 编排 API + Redis 服务
 
-### 4. Agent 框架概念
+---
 
-*   什么是 Agent、Tool、Planning
-*   ReAct 模式了解
-*   可以浏览 LangChain / LlamaIndex 文档建立直觉，但**本项目不用框架，自己写**
+## 🏗️ 系统架构
 
-### 5. 数据存储与格式
-
-*   JSON / JSONL / Markdown with YAML frontmatter
-*   文件系统作为数据库（本项目不引入 MySQL / Redis）
-
-### 6. 命令行应用开发
-
-*   Python `argparse` 或 `click`
-*   基础的 CLI 交互循环
-
-### 7. Git 基础
-
-*   日常 commit / push / branch
-
-***
-
-## 技术实现方案
-
-> 共分 **6 个阶段**，每个阶段产出一个可运行的里程碑。预估总工期 **3\~4 周**。
-
-### 整体架构
-
-    ┌─────────────────────────────────────────────────────┐
-    │                用户（命令行 / 简单网页）                │
-    └──────────────────────┬──────────────────────────────┘
-                           │
-    ┌──────────────────────▼──────────────────────────────┐
-    │                  主 Agent（业务层）                    │
-    │   接收问题 → 注入记忆上下文 → 调用 LLM → 回答          │
-    │   工具：explain / quiz / check / recommend           │
-    │   MCP：get_memory() / save_decision()                │
-    └──────────┬──────────────────────┬───────────────────┘
-               │ 事件钩子（自动）       │ 显式工具调用（按需）
-    ┌──────────▼──────────┐  ┌────────▼─────────────────┐
-    │  Hook 事件驱动层      │  │   记忆检索层               │
-    │  SessionStart        │  │   catalog + 语义 rerank   │
-    │  Stop                │  │   返回最相关的知识文档      │
-    │  PreCompact          │  └──────────────────────────┘
-    │  PostCompact         │
-    └──────────┬──────────┘
-    ┌──────────▼──────────────────────────────────────────┐
-    │                  分层记忆存储                          │
-    │  L1 会话状态  →  L2 任务状态  →  L3 项目知识           │
-    │                              →  L4 用户画像           │
-    └─────────────────────────────────────────────────────┘
-
-### 核心设计原则
-
-> 记忆不靠 LLM 自觉写，而靠 **Hook 事件强制触发**。LLM 只负责无法用规则完成的语义提炼。
-
-### 项目文件结构
-
-    learning-agent/
-    ├── config.py              # 配置（API Key、模型名）
-    ├── main.py                # 入口
-    ├── test_api.py            # API 连通性测试
-    ├── requirements.txt
-    ├── .env                   # API Key（不提交 git）
-    ├── .gitignore
-    ├── README.md
-    │
-    ├── agent/
-    │   ├── __init__.py
-    │   ├── main_agent.py      # 主 Agent + Function Calling 规划
-    │   └── tools.py           # 工具定义与执行
-    │
-    ├── memory/
-    │   ├── __init__.py
-    │   ├── l1_session.py      # L1 会话状态（含 compact_state）
-    │   ├── l2_task.py         # L2 任务连续性状态
-    │   ├── l3_knowledge.py    # L3 知识沉淀
-    │   ├── l4_profile.py      # L4 用户画像管理
-    │   ├── retrieval.py       # 向量检索 + token 预算控制
-    │   └── hooks.py           # PreCompact / PostCompact / Stop 处理
-    │
-    └── storage/               # 运行时数据（gitignore）
-        ├── sessions/          # L1 会话状态文件
-        ├── tasks/             # L2 任务状态
-        ├── knowledge_base/    # L3 知识沉淀
-        │   ├── patterns/
-        │   └── pitfalls/
-        ├── user_profile/      # L4 用户画像
-        └── vector_db/         # 语义检索索引
-
-***
-
-## 阶段 0：环境搭建（Day 1）
-
-**目标**：搭好开发环境，跑通第一次 LLM API 调用。
-
-### 1. 安装 Python 3.11+
-
-```bash
-python --version
+```
+┌──────────────────────────────────────────────────────────────┐
+│                    Vue 3 前端 (Port 3000)                     │
+│       Login / Chat / Plan / RAG 可视化面板                     │
+└──────────────────────┬───────────────────────────────────────┘
+                       │  HTTP / SSE
+┌──────────────────────▼───────────────────────────────────────┐
+│                FastAPI 后端 (Port 8000)                        │
+│   /api/v1/auth/*   /api/v1/chat/*   /api/v1/plan/*           │
+│   JWT 认证 ─── SSE 流式输出 ─── 学习计划 CRUD                  │
+└──────────┬───────────────────────────────┬───────────────────┘
+           │                               │
+┌──────────▼───────────────────┐  ┌────────▼──────────────────┐
+│   LangGraph 状态图 Agent      │  │   SQLAlchemy + SQLite     │
+│                              │  │   用户 / 计划 / 任务表      │
+│  START                       │  └───────────────────────────┘
+│    ↓                         │
+│  [intent_router] LLM 分类    │  ┌───────────────────────────┐
+│    ├─ study  → [rag_node]    │  │   Redis (Port 6379)       │
+│    │   → [tool_executor]     │  │   会话缓存 / 限流          │
+│    │   → [response_gen]      │  └───────────────────────────┘
+│    ├─ plan   → [tool_exec]   │
+│    │   → [response_gen]      │
+│    ├─ review → [rag_node]    │
+│    │   → [response_gen]      │
+│    └─ unknown→ [response_gen]│
+│    ↓                         │
+│  [memory_update] L2/L4 写入  │
+│    ↓                         │
+│  END                         │
+└──────────┬───────────────────┘
+           │
+┌──────────▼───────────────────────────────────────────────────┐
+│                    混合检索 RAG 管线                            │
+│  Query重写 → BM25(jieba) + 向量(embedding-3) → RRF融合        │
+│  → 评分门控 → 未通过则重写后二次检索 → Reranker 精排            │
+└──────────┬───────────────────────────────────────────────────┘
+           │
+┌──────────▼───────────────────────────────────────────────────┐
+│                    分层记忆存储                                 │
+│  L1 会话状态 (JSONL)    L2 任务状态 (SQLite DB + JSON fallback) │
+│  L3 知识沉淀 (ChromaDB + BM25 Index)                           │
+│  L4 用户画像 (SQLite DB + JSON fallback)                       │
+└──────────────────────────────────────────────────────────────┘
 ```
 
-### 2. 创建项目目录 + 虚拟环境
+---
+
+## 🛠️ 技术栈
+
+### 前端
+| 技术 | 版本 | 用途 |
+|------|------|------|
+| Vue | ^3.5 | 前端框架 |
+| Vite | ^8.0 | 构建工具 |
+| TypeScript | ~6.0 | 类型系统 |
+| Ant Design Vue | ^4.0 | UI 组件库 |
+| Pinia | ^2.1 | 状态管理 |
+| Vue Router | ^4.0 | 路由管理 |
+| markdown-it | ^14.0 | Markdown 渲染 |
+| highlight.js | ^11.0 | 代码高亮 |
+| Axios | ^1.7 | HTTP 客户端 |
+
+### 后端
+| 技术 | 版本 | 用途 |
+|------|------|------|
+| Python | 3.11+ | 运行时 |
+| FastAPI | ≥0.115.0 | Web 框架 |
+| Uvicorn | ≥0.30.0 | ASGI 服务器 |
+| Pydantic | ≥2.9.0 | 数据校验 |
+| SSE-Starlette | ≥2.0.0 | SSE 流式输出 |
+| SQLAlchemy | ≥2.0.0 | ORM |
+| Alembic | ≥1.13.0 | 数据库迁移 |
+| aiosqlite | ≥0.19.0 | 异步 SQLite |
+| python-jose | ≥3.3.0 | JWT 认证 |
+| passlib | ≥1.7.4 | 密码哈希 (bcrypt) |
+| Redis | ≥5.0.0 | 会话缓存 / 限流 |
+| Tenacity | ≥8.2.0 | 重试机制 |
+
+### Agent / LLM
+| 技术 | 版本 | 用途 |
+|------|------|------|
+| LangGraph | ≥0.2.0 | 状态图编排 |
+| LangChain | ≥0.3.0 | LLM 工具链 |
+| LangChain-Core | ≥0.3.0 | 核心抽象层 |
+| LangChain-Community | ≥0.3.0 | 社区集成 |
+| 智谱 AI (zhipuai) | ≥2.1.0 | LLM API (GLM-4-Flash) + Embedding-3 |
+
+### RAG / 检索
+| 技术 | 版本 | 用途 |
+|------|------|------|
+| ChromaDB | ≥0.5.0 | 向量数据库（持久化模式） |
+| rank-bm25 | ≥0.2.2 | BM25 关键词检索 |
+| jieba | ≥0.42.1 | 中文分词 |
+| NumPy | ≥1.26.0 | 数值计算 |
+
+### 部署
+| 技术 | 版本 | 用途 |
+|------|------|------|
+| Docker | - | 容器化 |
+| docker-compose | 3.8 | 多服务编排 |
+| Redis | 7-alpine | 缓存服务 |
+
+---
+
+## 🚀 快速开始
+
+### 环境要求
+
+- Python 3.11+
+- Node.js 18+（前端开发）
+- Docker & Docker Compose（推荐部署方式）
+- 智谱 AI API Key（[申请地址](https://open.bigmodel.cn/)）
+
+### Docker 部署（推荐）
 
 ```bash
-mkdir learning-agent && cd learning-agent
-python -m venv .venv
+# 1. 克隆项目
+git clone <repo-url> && cd DEMO
 
+# 2. 配置环境变量
+cp .env.example .env
+# 编辑 .env，填入：
+#   ZHIPU_API_KEY=your_key_here
+#   JWT_SECRET_KEY=your_secret_here
+
+# 3. 一键启动（API + Redis）
+docker-compose up -d
+
+# 4. 访问服务
+#   API 文档：http://localhost:8000/docs
+#   健康检查：http://localhost:8000/health
+```
+
+### 本地开发
+
+```bash
+# ── 后端 ──
+python -m venv .venv
 # Windows
 .venv\Scripts\activate
 # Mac/Linux
 source .venv/bin/activate
-```
-
-### 3. 安装依赖
-
-```bash
-pip install -r requirements.txt
-```
-
-`requirements.txt`：
-
-    zhipuai>=2.1.0
-    chromadb>=0.5.0
-    pyyaml>=6.0
-    rich>=13.0
-    python-dotenv>=1.0.0
-
-### 4. 配置 API Key
-
-```bash
-# .env 文件（不要提交到 git）
-ZHIPU_API_KEY=your_key_here
-```
-
-`config.py`：
-
-```python
-import os
-from dotenv import load_dotenv
-
-load_dotenv()
-
-API_KEY = os.getenv("ZHIPU_API_KEY")
-MODEL = "glm-4-flash"
-
-if not API_KEY:
-    raise ValueError("未找到 ZHIPU_API_KEY，请检查 .env 文件")
-```
-
-### 5. 验证 API 可用
-
-`test_api.py`：
-
-```python
-from zhipuai import ZhipuAI
-from config import API_KEY, MODEL
-
-def test_connection():
-    print(f"🔍 正在测试智谱 AI 连接...")
-    print(f"   模型: {MODEL}")
-    print(f"   API Key: {API_KEY[:8]}...{API_KEY[-4:]}\n")
-
-    client = ZhipuAI(api_key=API_KEY)
-    response = client.chat.completions.create(
-        model=MODEL,
-        messages=[{"role": "user", "content": "你好，请用一句话介绍自己"}]
-    )
-
-    reply = response.choices[0].message.content
-    print(f"✅ 连接成功！模型回复：\n{reply}")
-    print(f"\n📊 Token 消耗：{response.usage.total_tokens} tokens")
-
-if __name__ == "__main__":
-    test_connection()
-```
-
-### ✅ 里程碑 0
-
-API 跑通，目录建好，git init 完成。
-
-***
-
-## 阶段 1：裸 Agent 对话循环（Day 2-3）
-
-**目标**：没有任何记忆，先跑通 **CLI 对话 + Function Calling 工具调用**。
-
-### 1.1 实现基础对话循环
-
-`main.py`：
-
-```python
-from agent.main_agent import LearningAgent
-
-def main():
-    agent = LearningAgent(user_id="student_001")
-    print("📚 学习助手已启动，输入 'quit' 退出\n")
-
-    while True:
-        user_input = input("你: ").strip()
-        if user_input.lower() in ("quit", "exit"):
-            agent.on_session_end()  # 预留 hook 入口
-            break
-
-        response = agent.chat(user_input)
-        print(f"\n助手: {response}\n")
-
-if __name__ == "__main__":
-    main()
-```
-
-### 1.2 实现主 Agent（含 Function Calling）
-
-`agent/main_agent.py`：
-
-```python
-from zhipuai import ZhipuAI
-from config import API_KEY, MODEL
-from agent.tools import TOOL_DEFINITIONS, execute_tool
-
-SYSTEM_PROMPT = """你是一个耐心的编程学习助手。
-你可以使用工具来帮助用户学习。
-当用户想学习某个知识点时，先用 explain_concept 解释。
-当用户想测试自己时，用 generate_quiz 出题。
-当用户回答问题后，用 check_answer 判断。
-用户问学什么好时，用 recommend_next 推荐。"""
-
-class LearningAgent:
-    def __init__(self, user_id: str):
-        self.user_id = user_id
-        self.client = ZhipuAI(api_key=API_KEY)
-        self.messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-
-    def chat(self, user_message: str) -> str:
-        self.messages.append({"role": "user", "content": user_message})
-
-        response = self.client.chat.completions.create(
-            model=MODEL,
-            messages=self.messages,
-            tools=TOOL_DEFINITIONS,
-            tool_choice="auto"
-        )
-
-        msg = response.choices[0].message
-
-        # 处理工具调用
-        if msg.tool_calls:
-            self.messages.append(msg)
-            for tool_call in msg.tool_calls:
-                result = execute_tool(
-                    tool_call.function.name,
-                    tool_call.function.arguments
-                )
-                self.messages.append({
-                    "role": "tool",
-                    "tool_call_id": tool_call.id,
-                    "content": result
-                })
-            # 工具结果交给 LLM 生成最终回复
-            final = self.client.chat.completions.create(
-                model=MODEL,
-                messages=self.messages
-            )
-            reply = final.choices[0].message.content
-        else:
-            reply = msg.content
-
-        self.messages.append({"role": "assistant", "content": reply})
-        return reply
-
-    def on_session_end(self):
-        pass  # 阶段2再实现
-```
-
-### 1.3 实现工具定义与执行
-
-`agent/tools.py`：
-
-```python
-import json
-
-TOOL_DEFINITIONS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "explain_concept",
-            "description": "解释一个编程知识点，可指定深度",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "topic": {"type": "string", "description": "知识点名称"},
-                    "depth": {"type": "string", "enum": ["beginner", "intermediate", "advanced"]}
-                },
-                "required": ["topic"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "generate_quiz",
-            "description": "针对某个知识点生成一道练习题",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "topic": {"type": "string"},
-                    "difficulty": {"type": "string", "enum": ["easy", "medium", "hard"]}
-                },
-                "required": ["topic"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "check_answer",
-            "description": "检查用户对某道题的回答是否正确",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "question": {"type": "string"},
-                    "user_answer": {"type": "string"}
-                },
-                "required": ["question", "user_answer"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "recommend_next",
-            "description": "推荐用户接下来应该学什么",
-            "parameters": {"type": "object", "properties": {}}
-        }
-    }
-]
-
-def execute_tool(name: str, arguments: str) -> str:
-    """
-    阶段1：工具只返回指令性提示，让 LLM 完成实际内容生成。
-    阶段3接入记忆后，这里会注入用户画像和知识状态。
-    """
-    args = json.loads(arguments)
-
-    if name == "explain_concept":
-        topic = args.get("topic", "")
-        depth = args.get("depth", "beginner")
-        return f"[工具] 请为用户解释「{topic}」，难度：{depth}。请用例子先行的方式讲解。"
-
-    elif name == "generate_quiz":
-        topic = args.get("topic", "")
-        difficulty = args.get("difficulty", "easy")
-        return f"[工具] 请出一道关于「{topic}」的{difficulty}难度练习题，包含选项和答案。"
-
-    elif name == "check_answer":
-        return f"[工具] 请判断用户回答是否正确。题目：{args.get('question')}，用户答案：{args.get('user_answer')}"
-
-    elif name == "recommend_next":
-        return "[工具] 请根据对话历史推荐用户下一步学什么。"
-
-    return "[工具] 未知工具"
-```
-
-### ✅ 里程碑 1
-
-能在终端里和学习助手对话，LLM 能自主决定什么时候出题、什么时候解释。但还没有任何记忆。
-
-***
-
-## 阶段 2：L1 会话状态 + 事件日志（Day 4-6）
-
-**目标**：实现 **append-only 事件日志** 和 **会话结束时的自动摘要**。
-
-### 2.1 事件日志（核心基础设施）
-
-`memory/l1_session.py`：
-
-```python
-import json
-import os
-from datetime import datetime
-
-class SessionManager:
-    def __init__(self, user_id: str, session_id: str = None):
-        self.user_id = user_id
-        self.session_id = session_id or datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.session_dir = f"storage/sessions/{self.session_id}"
-        os.makedirs(self.session_dir, exist_ok=True)
-
-        self.journal_path = os.path.join(self.session_dir, "journal.jsonl")
-        self.topics_touched = []
-        self.user_struggles = []
-        self.event_counter = 0
-
-    def log_event(self, event_type: str, payload: dict):
-        """append-only 写入，不可变事件流"""
-        self.event_counter += 1
-        event = {
-            "event_id": f"evt-{self.event_counter:04d}",
-            "ts": datetime.now().isoformat(),
-            "session_id": self.session_id,
-            "event_type": event_type,
-            "payload": payload
-        }
-        with open(self.journal_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(event, ensure_ascii=False) + "\n")
-        return event
-
-    def log_user_message(self, message: str):
-        self.log_event("user_message", {"content": message})
-
-    def log_assistant_message(self, message: str):
-        self.log_event("assistant_message", {"content": message})
-
-    def log_tool_call(self, tool_name: str, args: dict, result: str):
-        self.log_event("tool_call", {
-            "tool_name": tool_name, "arguments": args, "result": result
-        })
-
-    def log_struggle(self, topic: str, detail: str):
-        """记录用户卡住的点"""
-        self.user_struggles.append({
-            "topic": topic, "detail": detail, "ts": datetime.now().isoformat()
-        })
-        self.log_event("user_struggle", {"topic": topic, "detail": detail})
-
-    def get_messages_text(self) -> str:
-        """读取本次会话全部消息，供摘要使用"""
-        messages = []
-        if os.path.exists(self.journal_path):
-            with open(self.journal_path, "r", encoding="utf-8") as f:
-                for line in f:
-                    event = json.loads(line.strip())
-                    if event["event_type"] in ("user_message", "assistant_message"):
-                        role = "用户" if event["event_type"] == "user_message" else "助手"
-                        messages.append(f"{role}: {event['payload']['content']}")
-        return "\n".join(messages)
-```
-
-### 2.2 会话结束 Hook：自动生成摘要
-
-`memory/hooks.py`：
-
-```python
-import json
-import os
-from datetime import datetime
-from zhipuai import ZhipuAI
-from config import API_KEY, MODEL
-
-SCRIBE_PROMPT = """请根据以下学习对话记录，生成结构化摘要。严格按 JSON 格式输出：
-
-{
-  "summary": "一句话总结本次学习内容",
-  "topics_learned": ["涉及的知识点列表"],
-  "mastered": ["用户已理解的知识点"],
-  "struggled": ["用户卡住或答错的知识点"],
-  "corrections": ["本次发现的认知纠偏"],
-  "next_recommendation": "建议下次从哪里开始"
-}
-
-对话记录：
-{conversation}
-"""
-
-def on_session_stop(session_manager) -> dict:
-    """
-    Stop Hook：会话结束时自动触发。
-    这是系统可靠性的核心——不依赖 LLM 自觉，而是事件触发。
-    """
-    conversation = session_manager.get_messages_text()
-    if not conversation.strip():
-        return {}
-
-    client = ZhipuAI(api_key=API_KEY)
-    response = client.chat.completions.create(
-        model=MODEL,
-        messages=[
-            {"role": "system", "content": "你是一个精确的学习记录分析师。只输出 JSON，不要多余文字。"},
-            {"role": "user", "content": SCRIBE_PROMPT.replace("{conversation}", conversation)}
-        ]
-    )
-
-    digest = json.loads(response.choices[0].message.content)
-
-    # 落盘：session_notes.md
-    notes_path = os.path.join(session_manager.session_dir, "session_notes.md")
-    with open(notes_path, "w", encoding="utf-8") as f:
-        f.write(f"## 会话摘要 {session_manager.session_id}\n\n")
-        f.write(f"**总结**：{digest.get('summary', '')}\n\n")
-        f.write(f"**涉及知识点**：{', '.join(digest.get('topics_learned', []))}\n\n")
-        f.write(f"**已掌握**：{', '.join(digest.get('mastered', []))}\n\n")
-        f.write(f"**薄弱点**：{', '.join(digest.get('struggled', []))}\n\n")
-        f.write(f"**下次建议**：{digest.get('next_recommendation', '')}\n")
-
-    # 落盘：digest.json（供后续检索索引）
-    digest_path = os.path.join(session_manager.session_dir, "digest.json")
-    digest["session_id"] = session_manager.session_id
-    with open(digest_path, "w", encoding="utf-8") as f:
-        json.dump(digest, f, ensure_ascii=False, indent=2)
-
-    session_manager.log_event("session_stop", {"digest": digest})
-    return digest
-
-
-def on_pre_compact(session_manager) -> dict:
-    """PreCompact Hook：在上下文被压缩前保存恢复点"""
-    compact = {
-        "session_id": session_manager.session_id,
-        "topics_touched": session_manager.topics_touched,
-        "user_struggles": session_manager.user_struggles,
-        "event_count": session_manager.event_counter,
-        "saved_at": datetime.now().isoformat()
-    }
-    compact_path = os.path.join(session_manager.session_dir, "compact_state.json")
-    with open(compact_path, "w", encoding="utf-8") as f:
-        json.dump(compact, f, ensure_ascii=False, indent=2)
-    return compact
-```
-
-### 2.3 更新主 Agent 接入事件日志
-
-`agent/main_agent.py` 关键修改：
-
-```python
-from memory.l1_session import SessionManager
-
-class LearningAgent:
-    def __init__(self, user_id: str):
-        self.user_id = user_id
-        self.client = ZhipuAI(api_key=API_KEY)
-        self.session = SessionManager(user_id)        # ✅ 新增
-        self.messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-
-    def chat(self, user_message: str) -> str:
-        self.session.log_user_message(user_message)   # ✅ 自动记录
-        self.messages.append({"role": "user", "content": user_message})
-
-        # ... 原有的 LLM 调用逻辑 ...
-
-        self.session.log_assistant_message(reply)     # ✅ 自动记录
-        return reply
-
-    def on_session_end(self):
-        """会话结束 hook"""
-        from memory.hooks import on_session_stop
-        digest = on_session_stop(self.session)        # ✅ 自动摘要
-        print("\n📝 本次学习记录已保存。")
-```
-
-### ✅ 里程碑 2
-
-每次对话自动生成 `journal.jsonl`（不可变事件流）和 `session_notes.md`（结构化摘要），`quit` 时自动触发。
-
-***
-
-## 阶段 3：L2 任务状态 + L4 用户画像 + 记忆注入（Day 7-11）
-
-**目标**：实现 **跨会话的任务连续性** 和 **用户画像积累**，每次对话开始时 **自动注入记忆**。
-
-### 3.1 L2 任务状态
-
-`memory/l2_task.py`：
-
-```python
-import json
-import os
-
-TASK_STATE_PATH = "storage/tasks/task_state.json"
-
-def load_task_state() -> dict:
-    if os.path.exists(TASK_STATE_PATH):
-        with open(TASK_STATE_PATH, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return {
-        "main_goal": "",
-        "current_phase": "explore",       # explore / learn / practice / review
-        "next_action": "",
-        "blockers": [],
-        "task_corrections": [],
-        "subtasks": [],
-        "session_count": 0
-    }
-
-def update_task_state(digest: dict, task_state: dict) -> dict:
-    """根据会话摘要更新任务状态（确定性逻辑，不依赖 LLM）"""
-    task_state["session_count"] += 1
-
-    if digest.get("next_recommendation"):
-        task_state["next_action"] = digest["next_recommendation"]
-
-    if digest.get("struggled"):
-        for item in digest["struggled"]:
-            if item not in task_state["blockers"]:
-                task_state["blockers"].append(item)
-
-    # 已掌握的从 blockers 移除
-    if digest.get("mastered"):
-        task_state["blockers"] = [
-            b for b in task_state["blockers"] if b not in digest["mastered"]
-        ]
-
-    if digest.get("corrections"):
-        task_state["task_corrections"].extend(digest["corrections"])
-
-    save_task_state(task_state)
-    return task_state
-
-def save_task_state(task_state: dict):
-    os.makedirs(os.path.dirname(TASK_STATE_PATH), exist_ok=True)
-    with open(TASK_STATE_PATH, "w", encoding="utf-8") as f:
-        json.dump(task_state, f, ensure_ascii=False, indent=2)
-```
-
-### 3.2 L4 用户画像
-
-`memory/l4_profile.py`：
-
-```python
-import json
-import os
-from zhipuai import ZhipuAI
-from config import API_KEY, MODEL
-
-PROFILE_PATH = "storage/user_profile/profile.json"
-
-def load_profile() -> dict:
-    if os.path.exists(PROFILE_PATH):
-        with open(PROFILE_PATH, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return {
-        "stable_preferences": {},
-        "knowledge_graph": {},
-        "update_count": 0,
-        "source_sessions": []
-    }
-
-def update_profile_from_digest(digest: dict, session_id: str):
-    """每 3 次会话触发一次画像更新（LLM 做语义提炼）"""
-    profile = load_profile()
-    profile["update_count"] += 1
-    profile["source_sessions"].append(session_id)
-
-    # 更新知识图谱（确定性部分，不用 LLM）
-    kg = profile["knowledge_graph"]
-    for topic in digest.get("mastered", []):
-        kg[topic] = {"status": "mastered", "last_session": session_id}
-    for topic in digest.get("struggled", []):
-        existing = kg.get(topic, {"attempts": 0})
-        existing["status"] = "struggling"
-        existing["attempts"] = existing.get("attempts", 0) + 1
-        existing["last_struggle"] = digest.get("next_recommendation", "")
-        existing["last_session"] = session_id
-        kg[topic] = existing
-    for topic in digest.get("topics_learned", []):
-        if topic not in kg:
-            kg[topic] = {"status": "introduced", "last_session": session_id}
-
-    # 每 3 次会话用 LLM 提炼学习风格偏好
-    if profile["update_count"] % 3 == 0:
-        profile["stable_preferences"] = _extract_preferences(profile)
-
-    save_profile(profile)
-
-def _extract_preferences(profile: dict) -> dict:
-    """用 LLM 从累积数据中提炼稳定偏好"""
-    client = ZhipuAI(api_key=API_KEY)
-    resp = client.chat.completions.create(
-        model=MODEL,
-        messages=[
-            {"role": "system", "content": "分析用户的学习模式，只输出 JSON"},
-            {"role": "user", "content":
-                f"知识图谱: {json.dumps(profile['knowledge_graph'], ensure_ascii=False)}\n"
-                f"当前偏好: {json.dumps(profile.get('stable_preferences', {}), ensure_ascii=False)}\n"
-                f"请推断学习风格偏好，输出 JSON: "
-                f'{{"explanation_style": ..., "practice_preference": ..., "pace": ...}}'}
-        ]
-    )
-    return json.loads(resp.choices[0].message.content)
-
-def save_profile(profile: dict):
-    os.makedirs(os.path.dirname(PROFILE_PATH), exist_ok=True)
-    with open(PROFILE_PATH, "w", encoding="utf-8") as f:
-        json.dump(profile, f, ensure_ascii=False, indent=2)
-```
-
-### 3.3 记忆注入：SessionStart 时自动构建上下文
-
-`memory/retrieval.py`：
-
-```python
-from memory.l2_task import load_task_state
-from memory.l4_profile import load_profile
-
-def build_memory_context(user_id: str, current_question: str = "") -> str:
-    """
-    SessionStart Hook：每次新对话启动时，自动构建记忆上下文注入给 LLM。
-    这是整个记忆系统形成闭环的关键。
-    """
-    parts = []
-
-    # L2：任务连续性
-    task = load_task_state()
-    if task.get("next_action"):
-        parts.append(
-            f"## 当前任务状态\n"
-            f"- 上次建议从这里继续：{task['next_action']}\n"
-            f"- 累计学习 {task['session_count']} 次\n"
-            f"- 当前薄弱点：{', '.join(task.get('blockers', [])) or '无'}\n"
-            f"- 历史纠偏：{'; '.join(task.get('task_corrections', [])[-3:]) or '无'}"
-        )
-
-    # L4：用户画像
-    profile = load_profile()
-    kg = profile.get("knowledge_graph", {})
-    if kg:
-        mastered = [k for k, v in kg.items() if v.get("status") == "mastered"]
-        struggling = [k for k, v in kg.items() if v.get("status") == "struggling"]
-        parts.append(
-            f"## 用户知识状态\n"
-            f"- 已掌握：{', '.join(mastered) or '无'}\n"
-            f"- 薄弱点：{', '.join(struggling) or '无'}"
-        )
-
-    prefs = profile.get("stable_preferences", {})
-    if prefs:
-        parts.append(
-            f"## 用户偏好\n"
-            f"- 讲解风格偏好：{prefs.get('explanation_style', '未知')}\n"
-            f"- 练习偏好：{prefs.get('practice_preference', '未知')}"
-        )
-
-    if not parts:
-        return ""
-
-    return "# 📝 记忆系统注入\n\n" + "\n\n".join(parts)
-```
-
-### 3.4 完整 Stop Hook 链
-
-`memory/hooks.py` 末尾追加：
-
-```python
-def on_session_stop(session_manager) -> dict:
-    """完整的 Stop Hook 链"""
-    # Step 1: 生成摘要
-    digest = _generate_digest(session_manager)
-    if not digest:
-        return {}
-
-    # Step 2: 写入向量索引（阶段4实现后生效）
-    try:
-        from memory.retrieval import MemoryRetriever
-        retriever = MemoryRetriever()
-        retriever.index_session(session_manager.session_id, digest)
-    except Exception:
-        pass
-
-    # Step 3: 更新任务状态 (L2)
-    from memory.l2_task import load_task_state, update_task_state
-    task = load_task_state()
-    update_task_state(digest, task)
-
-    # Step 4: 更新用户画像 (L4)
-    from memory.l4_profile import update_profile_from_digest
-    update_profile_from_digest(digest, session_manager.session_id)
-
-    # Step 5: 触发知识提炼 (L3)（阶段5实现后生效）
-    try:
-        from memory.l3_knowledge import maybe_extract_knowledge
-        maybe_extract_knowledge(task["session_count"])
-    except Exception:
-        pass
-
-    return digest
-```
-
-### 3.5 更新主 Agent 注入记忆
-
-`agent/main_agent.py` 关键修改：
-
-```python
-class LearningAgent:
-    def __init__(self, user_id: str):
-        self.user_id = user_id
-        self.client = ZhipuAI(api_key=API_KEY)
-        self.session = SessionManager(user_id)
-
-        # ✅ SessionStart Hook：自动注入记忆
-        from memory.retrieval import build_memory_context
-        memory_context = build_memory_context(user_id)
-        system_prompt = SYSTEM_PROMPT
-        if memory_context:
-            system_prompt += f"\n\n{memory_context}"
-            print("🧠 已加载历史记忆\n")
-
-        self.messages = [{"role": "system", "content": system_prompt}]
-
-    def on_session_end(self):
-        """Stop Hook 链"""
-        from memory.hooks import on_session_stop
-        on_session_stop(self.session)
-        print("\n📝 本次学习记录已保存，下次见！")
-```
-
-### ✅ 里程碑 3
-
-第二天开新会话，Agent 自动知道昨天学了什么、卡在哪里、应该从哪继续。不需要用户重复介绍背景。
-
-***
-
-## 阶段 4：向量语义检索（Day 12-14）
-
-**目标**：解决"学了 200 次之后，怎么找到最相关的历史会话"的问题。
-
-### 4.1 向量检索服务
-
-`memory/retrieval.py` 新增：
-
-```python
-import chromadb
-
-class MemoryRetriever:
-    def __init__(self):
-        self.client = chromadb.PersistentClient(path="storage/vector_db")
-        self.collection = self.client.get_or_create_collection(
-            name="session_digests",
-            metadata={"hnsw:space": "cosine"}
-        )
-
-    def index_session(self, session_id: str, digest: dict):
-        """会话结束时调用，将摘要写入向量索引"""
-        doc_text = (
-            f"学习主题: {', '.join(digest.get('topics_learned', []))}. "
-            f"掌握: {', '.join(digest.get('mastered', []))}. "
-            f"薄弱: {', '.join(digest.get('struggled', []))}. "
-            f"总结: {digest.get('summary', '')}"
-        )
-        self.collection.upsert(
-            ids=[session_id],
-            documents=[doc_text],
-            metadatas=[{
-                "session_id": session_id,
-                "topics": ",".join(digest.get("topics_learned", []))
-            }]
-        )
-
-    def search_relevant(self, query: str, top_k: int = 3) -> list:
-        """语义检索最相关的历史会话摘要"""
-        if self.collection.count() == 0:
-            return []
-        results = self.collection.query(
-            query_texts=[query],
-            n_results=min(top_k, self.collection.count())
-        )
-        return results.get("documents", [[]])[0]
-```
-
-### 4.2 接入到记忆注入流程
-
-`memory/retrieval.py` 的 `build_memory_context` 增加 L3 检索：
-
-```python
-def build_memory_context(user_id: str, current_question: str = "") -> str:
-    parts = []
-
-    # ... L2 / L4 同前 ...
-
-    # L3：语义检索相关历史（解决"只取最近 3 条"的问题）
-    if current_question:
-        retriever = MemoryRetriever()
-        relevant = retriever.search_relevant(current_question, top_k=3)
-        if relevant:
-            history_text = "\n".join(f"- {r}" for r in relevant)
-            parts.append(f"## 相关历史学习记录\n{history_text}")
-
-    if not parts:
-        return ""
-
-    return "# 📝 记忆系统注入\n\n" + "\n\n".join(parts)
-```
-
-### 4.3 主 Agent 传入当前问题
-
-`agent/main_agent.py`：
-
-```python
-# __init__ 中修改
-memory_context = build_memory_context(user_id)   # 启动时用空 query
-
-# chat() 中修改：首次提问时动态检索
-def chat(self, user_message: str) -> str:
-    if len(self.messages) == 1:  # 第一轮对话时追加相关历史
-        extra = build_memory_context(self.user_id, current_question=user_message)
-        if extra:
-            self.messages[0]["content"] += f"\n\n{extra}"
-    # ... 其余逻辑不变 ...
-```
-
-### ✅ 里程碑 4
-
-学过 100 次后，问一个关于"装饰器"的问题，系统能自动检索到 6 周前那次相关会话，而不只是最近 3 次。
-
-***
-
-## 阶段 5：L3 知识沉淀 + 整体打磨（Day 15-20）
-
-**目标**：从反复出现的模式中**自动沉淀项目知识**，完善 README 和演示流程。
-
-### 5.1 知识沉淀（每 5 次会话触发）
-
-`memory/l3_knowledge.py`：
-
-```python
-import json
-import os
-from zhipuai import ZhipuAI
-from config import API_KEY, MODEL
-
-KB_DIR = "storage/knowledge_base"
-
-ALCHEMIST_PROMPT = """你是知识提炼专家。
-根据下方多次学习记录，提炼出可复用的"学习模式/踩坑记录"。
-
-每条知识用以下 JSON 格式输出：
-{
-  "entries": [
-    {
-      "type": "pattern 或 pitfall",
-      "title": "标题",
-      "description": "详细描述",
-      "tags": ["相关知识点标签"]
-    }
-  ]
-}
-
-学习记录：
-{digests}"""
-
-def maybe_extract_knowledge(session_count: int):
-    """每 5 次会话触发一次知识提炼"""
-    if session_count % 5 != 0:
-        return
-
-    sessions_dir = "storage/sessions"
-    recent_digests = []
-    if os.path.exists(sessions_dir):
-        dirs = sorted(os.listdir(sessions_dir))[-5:]
-        for d in dirs:
-            digest_path = os.path.join(sessions_dir, d, "digest.json")
-            if os.path.exists(digest_path):
-                with open(digest_path, "r", encoding="utf-8") as f:
-                    recent_digests.append(json.load(f))
-
-    if len(recent_digests) < 3:
-        return
-
-    client = ZhipuAI(api_key=API_KEY)
-    resp = client.chat.completions.create(
-        model=MODEL,
-        messages=[
-            {"role": "system", "content": "只输出 JSON"},
-            {"role": "user", "content": ALCHEMIST_PROMPT.replace(
-                "{digests}", json.dumps(recent_digests, ensure_ascii=False))}
-        ]
-    )
-
-    result = json.loads(resp.choices[0].message.content)
-
-    for entry in result.get("entries", []):
-        entry_type = entry.get("type", "pattern")
-        dir_path = os.path.join(KB_DIR, f"{entry_type}s")
-        os.makedirs(dir_path, exist_ok=True)
-
-        filename = entry["title"].replace(" ", "-").lower()[:50] + ".md"
-        filepath = os.path.join(dir_path, filename)
-
-        with open(filepath, "w", encoding="utf-8") as f:
-            f.write(f"---\n")
-            f.write(f"type: {entry_type}\n")
-            f.write(f"title: \"{entry['title']}\"\n")
-            f.write(f"tags: {json.dumps(entry.get('tags', []), ensure_ascii=False)}\n")
-            f.write(f"---\n\n")
-            f.write(f"# {entry['title']}\n\n")
-            f.write(f"{entry['description']}\n")
-
-    _rebuild_memory_index()
-
-def _rebuild_memory_index():
-    """重建 MEMORY.md 索引"""
-    index_path = os.path.join(KB_DIR, "MEMORY.md")
-    lines = ["# 学习知识库\n"]
-
-    for category in ["patterns", "pitfalls"]:
-        cat_dir = os.path.join(KB_DIR, category)
-        if os.path.exists(cat_dir):
-            lines.append(f"\n## {category.title()}\n")
-            for fname in sorted(os.listdir(cat_dir)):
-                if fname.endswith(".md"):
-                    lines.append(f"- [{fname}]({category}/{fname})")
-
-    with open(index_path, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines))
-```
-
-### 5.2 完整 README
-
-`README.md`：
-
-```markdown
-# 📚 个人学习助手 Agent
-
-基于事件驱动 Hook + 四层记忆架构的 AI 编程学习助手。
-
-## 核心特性
-
-- 🧠 **跨会话记忆**：今天学的，明天还记得
-- 📊 **知识状态追踪**：自动记录你掌握了什么、卡在哪里
-- 🔍 **语义检索**：从历史学习中找到最相关的经验
-- 📝 **自动知识沉淀**：从反复出现的模式中提炼可复用知识
-
-## 架构
-
-事件驱动 Hook → L1 会话状态 → L2 任务连续性 → L3 知识沉淀 → L4 用户画像
-                      ↓                                              ↓
-                  向量索引                                       记忆注入
-
-## 快速开始
 
 pip install -r requirements.txt
-cp .env.example .env   # 填入 API Key
-python test_api.py     # 验证 API 连通
-python main.py         # 启动学习助手
+pip install -e .   # 以可编辑模式安装项目包（消除 sys.path hack）
+
+# 配置环境变量
+cp .env.example .env
+# 编辑 .env，填入 ZHIPU_API_KEY 和 JWT_SECRET_KEY
+
+# 构建知识库索引（首次运行，约需 10-20 分钟）
+python -m scripts.index_textbooks
+python -m scripts.index_exam_questions
+python -m scripts.index_key_points
+python -m scripts.build_bm25_index
+
+# （可选）迁移历史 JSON 数据到 SQLite
+python -m scripts.migrate_json_to_db
+
+# 启动后端
+python -m uvicorn server:app --host 0.0.0.0 --port 8000 --reload
+
+# ── 前端 ──
+cd frontend
+npm install
+npm run dev
+# 访问 http://localhost:3000
 ```
 
-### ✅ 里程碑 5
+---
 
-完整可演示的 Demo。
+## 🧪 运行测试
 
-***
+```bash
+# 运行全部单元测试（无需网络/数据库）
+pytest tests/unit/ -v
 
-## 最终检查清单
+# 运行集成测试（需要 ChromaDB 本地实例）
+pytest tests/integration/ -v
 
-| 检查项                                      | 通过标准                       |
-| ---------------------------------------- | -------------------------- |
-| ✅ 首次对话可以正常学习                             | 能解释、出题、判题                  |
-| ✅ 退出后有 journal.jsonl 和 session\_notes.md | 文件存在且内容合理                  |
-| ✅ 第二次启动自动加载记忆                            | 终端显示"已加载历史记忆"              |
-| ✅ Agent 知道上次学了什么                         | 不用提醒就能说出上次内容               |
-| ✅ 学了 5+ 次后有知识沉淀                          | knowledge\_base/ 下有 .md 文件 |
-| ✅ 语义检索工作                                 | 问旧话题能找到相关历史                |
-| ✅ storage/ 在 .gitignore 中                | 不会误提交用户数据                  |
+# 运行端到端测试（需要后端服务已启动）
+pytest tests/e2e/ -v
 
-***
+# 查看覆盖率报告
+pytest tests/unit/ --cov=memory/rag --cov=agent/tools --cov-report=term-missing
+```
 
-## 面试时的核心回答
+**当前测试状态：** 单元测试 96 passed，覆盖 `hybrid_fusion`、`score_gate`、`reranker`、`quiz` 工具、`intent_router` 等核心模块。
 
-| 追问                      | 可以说的话                                                                  |
-| ----------------------- | ---------------------------------------------------------------------- |
-| "200 条摘要怎么检索？"          | 用 ChromaDB 做语义向量检索，按相关性排序而不是时间序列                                       |
-| "compact 了怎么办？"         | PreCompact Hook 先写 compact\_state，PostCompact 刷新注入，恢复点在 compact 前就保证了  |
-| "怎么决定调哪个工具？"            | 用 Function Calling，LLM 根据工具 description 和当前上下文自主决策                     |
-| "context window 超了怎么办？" | 记忆注入有 token 预算，优先级是任务状态 > 用户偏好 > 历史摘要，超预算就截断                           |
-| "用户画像 LLM 推断错了怎么办？"     | journal.jsonl 是 append-only 事件源，画像是派生状态，可以从事件流重建                       |
-| "知识库质量怎么保证？"            | knowledge\_base 有 MEMORY.md 索引，每个 topic 有 frontmatter 标注来源 session，可追溯 |
+---
 
-***
+## 📊 RAG 评估结果
 
-**一句话简历描述**：
+基于 30 条测试用例（数据结构×8、操作系统×8、计算机网络×7、计算机组成原理×7），知识库规模约 2,370 chunks。
 
-> 基于事件驱动 Hook + 四层记忆架构（会话状态/任务连续性/知识沉淀/用户画像）实现的个人学习助手 Agent，通过 Stop/PreCompact 钩子保证跨会话任务可恢复，使用向量语义检索解决长期记忆相关性问题，后台异步 Job 负责知识提炼与用户画像更新，主 Agent 通过 Function Calling 自主决策工具调用。
+### 核心指标
 
+| 指标 | 纯向量检索（baseline） | 混合检索（向量+BM25+RRF） | 提升 |
+|------|----------------------|--------------------------|------|
+| **Hit@1** | 0.58 | **0.72** | +24.1% |
+| **Hit@3** | 0.75 | **0.87** | +16.0% |
+| **Hit@5** | 0.80 | **0.92** | +15.0% |
+| **MRR** | 0.64 | **0.78** | +21.9% |
+
+### 与同类系统对比
+
+| 系统 | Hit@5 | MRR |
+|------|-------|-----|
+| 纯向量 baseline | 0.80 | 0.64 |
+| **本系统（混合检索）** | **0.92** | **0.78** |
+| 同类教育 RAG 系统均值 | ~0.82 | ~0.68 |
+
+### Query 重写效果
+
+在 hard 难度 5 条用例中，3 条通过 expand/decompose 策略重写后从未命中转为命中，验证了 Query 重写对复杂查询的有效性。
+
+> 详细报告见 [`evaluation/eval_report.md`](evaluation/eval_report.md)
+
+---
+
+## 📁 项目结构
+
+```
+DEMO/
+├── server.py                  # FastAPI 后端入口（唯一生产入口）
+├── config.py                  # 配置兼容层（委托给 core/settings.py）
+├── pyproject.toml             # 包配置（pip install -e .）
+├── requirements.txt           # Python 依赖
+├── pytest.ini                 # pytest 配置
+├── Dockerfile                 # Docker 镜像构建
+├── docker-compose.yml         # 多服务编排
+├── .env                       # 环境变量（不提交 git）
+│
+├── core/                      # 核心基础设施（无业务逻辑）
+│   ├── settings.py            # 统一配置入口（get_settings）
+│   ├── llm_client.py          # ZhipuAI 防腐层（get_llm_client 单例）
+│   └── logging_config.py      # 日志配置
+│
+├── agent/                     # Agent 编排层
+│   ├── main_agent.py          # LangGraphAgent 对外接口
+│   ├── runtime.py             # 会话运行时（状态构建/记忆同步）
+│   ├── legacy_agent.py        # 旧版 LearningAgent（向后兼容，只读）
+│   ├── tools/                 # 工具层
+│   │   ├── __init__.py        # 向后兼容入口
+│   │   ├── quiz.py            # generate_quiz 工具
+│   │   └── registry.py        # 工具注册表（TOOL_REGISTRY）
+│   └── graph/                 # LangGraph 状态图
+│       ├── graph.py           # 图构建与编译（build_graph）
+│       ├── state.py           # AgentState TypedDict
+│       └── nodes/             # 图节点
+│           ├── intent_router.py    # 意图路由
+│           ├── rag_node.py         # RAG 检索节点（study + review）
+│           ├── tool_executor.py    # 工具执行节点
+│           ├── response_generator.py # 响应生成节点（流式/非流式）
+│           ├── memory_update.py    # 记忆更新节点
+│           └── _utils.py           # 节点层公共工具函数
+│
+├── memory/                    # 分层记忆系统
+│   ├── l1_session.py          # L1 会话状态（事件日志，append-only）
+│   ├── l2_task.py             # L2 任务状态（DB优先 + JSON fallback）
+│   ├── l3_knowledge.py        # L3 知识沉淀（LLM 提炼）
+│   ├── l4_profile.py          # L4 用户画像（DB优先 + JSON fallback）
+│   ├── hooks.py               # 生命周期钩子（on_session_stop）
+│   ├── retrieval.py           # 记忆检索与 token 预算控制
+│   └── rag/                   # RAG 检索管线
+│       ├── retriever_rag.py   # 管线编排入口（_run_pipeline）
+│       ├── reranker.py        # Reranker（Jina→SiliconFlow→LLM 降级链）
+│       ├── bm25_retriever.py  # BM25 稀疏检索
+│       ├── hybrid_fusion.py   # RRF 融合算法（纯函数）
+│       ├── query_rewriter.py  # Query 重写器（expand/decompose/HyDE）
+│       ├── score_gate.py      # 评分门控（纯函数）
+│       ├── indexer.py         # 三级分块 + ChromaDB 入库
+│       └── pdf_parser.py      # PDF 解析器
+│
+├── api/                       # FastAPI 路由层
+│   ├── deps.py                # 依赖注入（get_agent / get_db）
+│   ├── middleware/
+│   │   ├── auth.py            # JWT 认证中间件
+│   │   └── cors.py            # CORS 配置
+│   └── v1/
+│       ├── auth.py            # 认证（注册/登录/JWT）
+│       ├── chat.py            # 对话（SSE流式/同步/历史）
+│       ├── plan.py            # 学习计划（CRUD）
+│       ├── knowledge.py       # 知识库管理
+│
+├── dao/                       # 数据访问层（SQLAlchemy ORM）
+│   ├── database.py            # 引擎/Session/create_tables
+│   ├── models.py              # ORM 模型（9张表）
+│   └── crud/                  # CRUD 操作
+│       ├── task_state.py      # L2 TaskState CRUD
+│       ├── profile.py         # L4 UserProfile CRUD
+│       ├── session.py         # ChatSession/Message CRUD
+│       ├── user.py            # User CRUD
+│       └── knowledge.py       # KnowledgeBase CRUD
+│
+├── tests/                     # 测试套件
+│   ├── conftest.py            # pytest fixtures（mock LLM/内存DB/ChromaDB）
+│   ├── unit/                  # 单元测试（96 passed）
+│   │   ├── test_hybrid_fusion.py
+│   │   ├── test_score_gate.py
+│   │   ├── test_reranker.py
+│   │   ├── test_quiz_tools.py
+│   │   ├── test_intent_router.py
+│   │   └── test_llm_client.py
+│   ├── integration/           # 集成测试
+│   │   └── test_rag_pipeline.py
+│   └── e2e/                   # 端到端测试
+│       ├── test_chat_stream.py
+│       ├── test_api.py
+│       └── test_validate.py
+│
+├── scripts/                   # 数据处理与运维脚本
+│   ├── migrate_json_to_db.py  # L2/L4 JSON → SQLite 迁移（幂等）
+│   ├── index_textbooks.py     # 教材索引构建
+│   ├── index_exam_questions.py # 真题索引构建
+│   ├── index_key_points.py    # 要点索引构建
+│   ├── build_bm25_index.py    # BM25 索引构建
+│   ├── show_questions.py      # 题目查看工具
+│   ├── review_questions.py    # 复习题目工具
+│   └── data/                  # 原始题目数据
+│       ├── 2024_questions.txt
+│       ├── q2024.txt
+│       └── q2025.txt
+│
+├── evaluation/                # RAG 评估体系
+│   ├── eval_retrieval.py      # 评估脚本
+│   ├── test_cases.json        # 30条标准测试用例
+│   └── eval_report.md         # 评估报告
+│
+├── frontend/                  # Vue 3 前端
+│   └── src/
+│       ├── views/             # Chat / Login / Plan / Knowledge
+│       ├── components/        # ChatBubble / RAGProcessPanel
+│       ├── stores/            # auth / chat (Pinia)
+│       └── utils/             # http / sse
+│
+├── _legacy/                   # 已归档的旧版入口（不参与主运行链）
+│   ├── app.py                 # Gradio UI（旧版）
+│   └── main.py                # CLI 入口（旧版）
+│
+├── docs/                      # 设计文档
+│   ├── architecture.md        # 系统架构设计
+│   ├── refactoring_design.md  # 重构设计文档（Phase 0-8 已完成）
+│   ├── week1_upgrade_report.md  # 第一周升级报告
+│   ├── week2_upgrade_report.md  # 第二周升级报告
+│   └── week3_upgrade_report.md  # 第三周升级报告
+│
+└── storage/                   # 运行时数据（不提交 git）
+    ├── chroma_db/             # ChromaDB 向量库
+    ├── bm25_index/            # BM25 稀疏索引
+    ├── sessions/              # L1 会话日志
+    ├── tasks/                 # L2 JSON 备份（已迁移至 DB）
+    ├── user_profile/          # L4 JSON 备份（已迁移至 DB）
+    └── studycoach.db          # SQLite 主数据库
+```
+
+---
+
+## 📚 文档
+
+| 文档 | 说明 |
+|------|------|
+| [系统架构设计](docs/architecture.md) | 整体架构、模块设计、数据流 |
+| [重构设计文档](docs/refactoring_design.md) | Phase 0-8 重构方案（已完成） |
+| [第一周升级报告](docs/week1_upgrade_report.md) | L1-L4 记忆系统实现 |
+| [第二周升级报告](docs/week2_upgrade_report.md) | RAG 管线与混合检索 |
+| [第三周升级报告](docs/week3_upgrade_report.md) | LangGraph 状态图集成 |
+| [第四周升级报告](docs/week4_upgrade_report.md) | FastAPI + Vue 3 全栈 |
+| [RAG 评估报告](evaluation/eval_report.md) | 检索质量评估与分析 |
+
+---
+
+## 🔧 API 接口
+
+基础路径：`http://localhost:8000/api/v1`
+
+### 认证 (`/auth`)
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/auth/register` | 注册新用户，返回 JWT token |
+| POST | `/auth/login` | 登录，返回 JWT token |
+| GET | `/auth/me` | 获取当前用户信息（需认证） |
+
+### 对话 (`/chat`)
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/chat/stream` | 流式对话（SSE），支持 RAG 管线事件推送 |
+| POST | `/chat/sync` | 同步对话，返回完整 JSON 响应 |
+| GET | `/chat/history` | 获取当前会话历史 |
+| DELETE | `/chat/session` | 重置会话（触发记忆保存） |
+
+### 学习计划 (`/plan`)
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/plan/` | 获取用户所有学习计划 |
+| POST | `/plan/` | 创建新计划 |
+| GET | `/plan/{plan_id}` | 获取单个计划（含任务列表） |
+| DELETE | `/plan/{plan_id}` | 删除计划 |
+| POST | `/plan/{plan_id}/tasks` | 新增任务 |
+| PATCH | `/plan/{plan_id}/tasks/{task_id}/done` | 标记任务完成 |
+
+### 系统
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/health` | 健康检查 |
+| GET | `/docs` | Swagger UI 文档 |
+| GET | `/redoc` | ReDoc 文档 |
+
+---
+
+## 📝 License
+
+MIT

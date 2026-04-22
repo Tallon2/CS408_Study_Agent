@@ -1,7 +1,6 @@
 from memory.l2_task import load_task_state
 from memory.l4_profile import load_profile
-from zhipuai import ZhipuAI
-from config import API_KEY, MODEL
+from core.llm_client import get_llm_client
 
 
 def rewrite_query(original_query: str, n_rewrites: int = 3) -> list[str]:
@@ -12,10 +11,10 @@ def rewrite_query(original_query: str, n_rewrites: int = 3) -> list[str]:
     原理：用户问"快排怎么写"，可能还需要检索"快速排序"、"partition"、"分治排序"。
     类比 Java：相当于搜索引擎的 Query Expansion / Synonym Expansion。
     """
-    client = ZhipuAI(api_key=API_KEY)
+    client = get_llm_client()
     try:
         resp = client.chat.completions.create(
-            model=MODEL,
+            model=client.default_model,
             messages=[
                 {"role": "system", "content": (
                     "你是搜索查询优化专家。用户会给你一个学习相关的问题，"

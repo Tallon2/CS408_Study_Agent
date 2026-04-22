@@ -1,0 +1,41 @@
+version: '3.8'
+
+services:
+  # FastAPI 后端
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=sqlite:///./storage/studycoach.db
+      - ZHIPU_API_KEY=${ZHIPU_API_KEY}
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-change-me-in-production}
+      - REDIS_URL=redis://:redis123@redis:6379/0
+    volumes:
+      - ./storage:/app/storage
+    depends_on:
+      - redis
+    command: python -m uvicorn server:app --host 0.0.0.0 --port 8000
+
+  # Gradio 前端（保留原有 app.py）
+  gradio:
+    build: .
+    ports:
+      - "7861:7861"
+    environment:
+      - ZHIPU_API_KEY=${ZHIPU_API_KEY}
+    volumes:
+      - ./storage:/app/storage
+    command: python app.py
+
+  # Redis 缓存（用于会话缓存和限流）
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: redis-server --requirepass redis123
+    volumes:
+      - redis_data:/data
+
+volumes:
+  redis_data:

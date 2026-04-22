@@ -1,8 +1,7 @@
 import json
 import os
 import re
-from zhipuai import ZhipuAI
-from config import API_KEY, MODEL
+from core.llm_client import get_llm_client
 
 KB_DIR = "storage/knowledge_base"
 
@@ -45,9 +44,9 @@ def maybe_extract_knowledge(session_count: int):
 
     print(f"🔬 触发知识提炼（第 {session_count} 次会话）...")
 
-    client = ZhipuAI(api_key=API_KEY)
+    client = get_llm_client()
     resp = client.chat.completions.create(
-        model=MODEL,
+        model=client.default_model,
         messages=[
             {"role": "system", "content": "只输出 JSON，不要任何多余文字"},
             {"role": "user", "content": ALCHEMIST_PROMPT.replace(
