@@ -168,9 +168,15 @@ def sync_memory_snapshot(
     """
     agent._memory_l2 = result_state.get("memory_l2", agent._memory_l2)
     agent._memory_l4 = result_state.get("memory_l4", agent._memory_l4)
-    agent._current_quiz_answer = result_state.get(
-        "current_quiz_answer", agent._current_quiz_answer
-    )
+    # current_quiz_answer 更新规则：
+    #   - result_state 有非空值 → 覆盖（出题场景，保存正确答案）
+    #   - result_state 有空值 且 tool_name == check_answer → 清空（判答完成）
+    #   - result_state 无该字段 / 其他节点输出 → 保持不变（避免 memory_update 覆盖）
+    new_quiz_answer = result_state.get("current_quiz_answer", None)
+    if new_quiz_answer:
+        agent._current_quiz_answer = new_quiz_answer
+    elif new_quiz_answer == "" and result_state.get("tool_name") == "check_answer":
+        agent._current_quiz_answer = ""
 
     # ── 对话轮数计数（存在 agent 实例上，跨 invoke 累积） ──
     agent._chat_round_count = getattr(agent, "_chat_round_count", 0) + 1
