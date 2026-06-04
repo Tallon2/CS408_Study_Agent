@@ -263,11 +263,11 @@ async function fetchProfile() {
   try {
     const { data } = await http.get<ProfileData>('/api/v1/profile/')
     Object.assign(profileData, data)
-    message.success('画像数据已更新')
-  } catch {
-    // API 不可用时使用 mock 数据优雅降级
+  } catch (err: any) {
+    // 网络异常或 401 时降级到 mock 数据，避免页面白屏
     Object.assign(profileData, JSON.parse(JSON.stringify(mockData)))
-    message.info('使用示例数据展示（后端画像接口暂未就绪）')
+    const msg = err?.response?.status === 401 ? '请先登录' : '画像数据加载失败，展示示例数据'
+    message.warning(msg)
   } finally {
     loading.value = false
   }

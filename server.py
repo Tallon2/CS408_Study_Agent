@@ -18,6 +18,7 @@ from api.v1.auth import router as auth_router
 from api.v1.chat import router as chat_router
 from api.v1.plan import router as plan_router
 from api.v1.knowledge import router as knowledge_router
+from api.v1.profile import router as profile_router
 
 # ── 应用创建 ──────────────────────────────────────
 app = FastAPI(
@@ -42,6 +43,7 @@ app.include_router(auth_router, prefix="/api/v1")
 app.include_router(chat_router, prefix="/api/v1")
 app.include_router(plan_router, prefix="/api/v1")
 app.include_router(knowledge_router, prefix="/api/v1")
+app.include_router(profile_router, prefix="/api/v1")
 
 # ── 启动事件 ──────────────────────────────────────
 @app.on_event("startup")
