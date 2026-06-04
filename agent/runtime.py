@@ -27,6 +27,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# 每隔 N 轮对话触发一次批量画像写入（fire-and-forget 后台线程）
+BATCH_UPDATE_INTERVAL = 5
+
 # ============================================================
 # System Prompt — 角色定义与行为规范（单一真实来源）
 # 从 main_agent.py 迁移至此，使 main_agent.py 保持精简
@@ -153,7 +156,8 @@ def sync_memory_snapshot(
     result_state: dict[str, Any],
 ) -> None:
     """
-    将图执行结果中的记忆字段同步回 agent 实例的内存快照。
+    将图执行结果中的记忆字段同步回 agent 实例的内存快照，
+    并在每 BATCH_UPDATE_INTERVAL 轮触发一次后台批量画像写入。
 
     每次 chat / chat_stream 执行完成后调用，确保下一轮对话
     能使用最新的 L2/L4 状态。
@@ -167,6 +171,29 @@ def sync_memory_snapshot(
     agent._current_quiz_answer = result_state.get(
         "current_quiz_answer", agent._current_quiz_answer
     )
+
+    # ── 对话轮数计数（存在 agent 实例上，跨 invoke 累积） ──
+    agent._chat_round_count = getattr(agent, "_chat_round_count", 0) + 1
+
+    if agent._chat_round_count % BATCH_UPDATE_INTERVAL == 0:
+        import threading
+        from agent.graph.nodes.memory_update import run_batch_profile_update
+        # 取消并发写入保护：同一时刻只允许一个批量更新线程在跑
+        if not getattr(agent, "_batch_updating", False):
+            agent._batch_updating = True
+
+            def _run():
+                try:
+                    run_batch_profile_update(agent.user_id, list(agent._messages))
+                finally:
+                    agent._batch_updating = False
+
+            threading.Thread(target=_run, daemon=True).start()
+            logger.info(
+                "已触发批量画像更新（第 %d 轮）user_id=%s",
+                agent._chat_round_count,
+                agent.user_id,
+            )
 
 
 def handle_session_end(agent: "LangGraphAgent") -> None:

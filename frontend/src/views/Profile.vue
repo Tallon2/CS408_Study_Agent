@@ -259,7 +259,6 @@ function formatDate(d?: string): string {
 }
 
 async function fetchProfile() {
-  loading.value = true
   try {
     const { data } = await http.get<ProfileData>('/api/v1/profile/')
     Object.assign(profileData, data)
@@ -268,17 +267,31 @@ async function fetchProfile() {
     Object.assign(profileData, JSON.parse(JSON.stringify(mockData)))
     const msg = err?.response?.status === 401 ? '请先登录' : '画像数据加载失败，展示示例数据'
     message.warning(msg)
+  }
+}
+
+async function refreshProfile() {
+  loading.value = true
+  try {
+    const { data } = await http.post<{ message: string; updated: boolean }>('/api/v1/profile/refresh')
+    if (data.updated) {
+      message.success('画像已更新，正在刷新数据…')
+    } else {
+      message.info(data.message || '暂无更新')
+    }
+    await fetchProfile()
+  } catch (err: any) {
+    message.warning('刷新失败，直接读取最新数据')
+    await fetchProfile()
   } finally {
     loading.value = false
   }
 }
 
-async function refreshProfile() {
+onMounted(async () => {
+  loading.value = true
   await fetchProfile()
-}
-
-onMounted(() => {
-  fetchProfile()
+  loading.value = false
 })
 </script>
 

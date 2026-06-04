@@ -232,3 +232,42 @@ def get_profile_summary(
         weak_points=len(weak_points_list),
         learning_style=_parse_learning_style(orm_profile.learning_style),
     )
+
+
+@router.post("/refresh")
+def refresh_profile(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """手动触发画像刷新：从当前会话历史生成 digest，更新 L2/L4 数据。
+
+    - 60 秒内重复请求直接返回缓存结果，避免重复调用 LLM
+    - 无活跃会话时返回提示
+    """
+    import time
+    from agent.graph.nodes.memory_update import run_batch_profile_update
+    from api.deps import _agent_cache
+
+    user_id = str(current_user.id)
+    agent = _agent_cache.get(user_id)
+
+    if agent is None:
+        return {"message": "当前无活跃会话，无需刷新", "updated": False}
+
+    # ── 去重时间窗：60 秒内不重复触发 ──
+    now = time.time()
+    last_refresh = getattr(agent, "_last_manual_refresh_ts", 0.0)
+    if now - last_refresh < 60:
+        remaining = int(60 - (now - last_refresh))
+        return {
+            "message": f"刷新冷却中，请 {remaining} 秒后再试",
+            "updated": False,
+        }
+
+    # ── 同步执行（手动刷新允许等待结果） ──
+    try:
+        run_batch_profile_update(user_id, list(agent._messages))
+        agent._last_manual_refresh_ts = now
+        return {"message": "画像已刷新", "updated": True}
+    except Exception as exc:
+        return {"message": f"刷新失败: {exc}", "updated": False}

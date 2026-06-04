@@ -82,6 +82,7 @@ def _parse_exam_text(raw: str) -> tuple[str, str, str]:
     Returns:
         (body, answer, explanation) 三元组，缺失字段返回空字符串
     """
+    import re as _re2
     lines = raw.strip().splitlines()
     # 去掉第一行的 [xxxx年第xx题-...] 头部标签
     if lines and _re.match(r'^\[.*\]$', lines[0].strip()):
@@ -96,6 +97,13 @@ def _parse_exam_text(raw: str) -> tuple[str, str, str]:
             explanation_val = ln[3:].strip()
         else:
             body_lines.append(ln)
+
+    # 兜底：若 startswith 未匹配（可能冒号为全角异体字），用 regex 再扫一遍
+    if not answer_val:
+        m = _re2.search(r'答案[：:]\s*([A-D])', raw)
+        if m:
+            answer_val = m.group(1).strip()
+
     return "\n".join(body_lines).strip(), answer_val, explanation_val
 
 
@@ -173,6 +181,10 @@ def generate_quiz(topic: str, difficulty: str = "easy", state: dict | None = Non
         h0 = good_hits[0]
         body0, answer0, _ = _parse_exam_text(h0["text"])
         source0 = _build_source_tag(h0.get("metadata", {}))
+
+        # 兜底：text 解析失败时从 metadata 取 answer 字段
+        if not answer0:
+            answer0 = str(h0.get("metadata", {}).get("answer", "")).strip().upper()
 
         # 直接生成给用户看的最终文本，LLM 只需原样输出
         ready_output = (

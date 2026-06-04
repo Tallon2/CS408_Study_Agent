@@ -64,6 +64,10 @@ class LangGraphAgent:
         self._memory_l4: dict
         self._memory_l2, self._memory_l4 = load_initial_memory()
         self._current_quiz_answer: str = ""
+        # 对话轮数计数器（跨 invoke 累积，存实例上而非 state 中）
+        self._chat_round_count: int = 0
+        # 批量更新并发锁标志（避免重复触发后台线程）
+        self._batch_updating: bool = False
 
         # 编译 LangGraph 状态图
         from agent.graph.graph import get_graph, get_prep_graph

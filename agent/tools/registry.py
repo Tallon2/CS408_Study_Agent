@@ -75,7 +75,13 @@ def _check_answer(args: dict, state: dict | None = None) -> str:
     if correct_answer:
         is_correct = (user_answer == correct_answer)
     else:
-        is_correct = None
+        # correct_answer 为空说明系统未记录本题答案（可能是 LLM 自编题或答案解析失败）
+        # 不能交给 LLM 自判（LLM 可能判错）——提示用户无法自动判答
+        return (
+            f"[工具指令] 系统未能记录本题的正确答案，无法自动判断对错。\n"
+            f"请直接告知用户：「本题答案记录丢失，无法自动判答，请参考教材或知识库核实答案。」\n"
+            f"不要猜测答案，不要编造对错结论。"
+        )
 
     if is_correct is True:
         verdict = f"✅ 回答正确！用户选择了 {user_answer}，正确答案就是 {correct_answer}。"
@@ -85,7 +91,7 @@ def _check_answer(args: dict, state: dict | None = None) -> str:
             f"要求：先祝贺用户答对，再简要解释为什么 {correct_answer} 是正确答案，巩固知识点。\n"
             f"语气：鼓励、肯定。"
         )
-    elif is_correct is False:
+    else:
         verdict = f"❌ 回答错误。用户选择了 {user_answer}，但正确答案是 {correct_answer}。"
         instruction = (
             f"[工具指令] 用户答错了这道题。\n"
@@ -96,13 +102,6 @@ def _check_answer(args: dict, state: dict | None = None) -> str:
             f"3. 解释为什么用户选择的 {user_answer} 是错误的\n"
             f"4. 给出相关知识点帮助记忆\n"
             f"语气：温和鼓励，不要打击信心。"
-        )
-    else:
-        instruction = (
-            f"[工具指令] 请判断用户的回答是否正确并给出详细反馈。\n"
-            f"题目：{question}\n"
-            f"用户答案：{user_answer}\n"
-            f"要求：先给出对/错判断，再解释原因，如果错了给出正确答案和关键知识点。"
         )
 
     if rag_explanation:
